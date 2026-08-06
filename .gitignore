@@ -1,4 +1,9 @@
 # 默认忽略的文件
 .idea
+__pycache__
 
 *.log
+
+clx_auto.md
+
+CONTEXT.md

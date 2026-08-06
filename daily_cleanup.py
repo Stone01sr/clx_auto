@@ -1,11 +1,17 @@
 import datetime
+import os
 import sys
 from random import randint
 
 import pyautogui
 import subprocess
 import time
+import psutil
 import pywinctl as pwc
+import win32api
+import win32con
+import win32gui
+import win32process
 import yaml
 import logging
 from pywinauto import Application, findwindows
@@ -35,15 +41,160 @@ def open_software(software_path):
 
 
 
+def find_pid_by_keyword(keyword):
+    """单次遍历查找可执行文件路径中包含keyword的进程，找不到返回None，不等待"""
+    keyword = keyword.lower()
+    for proc in psutil.process_iter(['pid', 'exe']):
+        try:
+            exe = proc.info['exe']
+            if exe and keyword in exe.lower():
+                return proc.info['pid']
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    return None
+
+def find_visible_hwnd_by_pid(pid, timeout=15, interval=1):
+    """通过进程pid轮询查找其可见顶层窗口，返回hwnd，超时返回None"""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        found_hwnd = []
+        def _enum_handler(hwnd, _):
+            if win32gui.IsWindowVisible(hwnd) and win32gui.GetWindowText(hwnd):
+                _, found_pid = win32process.GetWindowThreadProcessId(hwnd)
+                if found_pid == pid:
+                    found_hwnd.append(hwnd)
+        win32gui.EnumWindows(_enum_handler, None)
+        if found_hwnd:
+            return found_hwnd[0]
+        time.sleep(interval)
+    return None
+
+def force_window_foreground(hwnd):
+    """将窗口强制置于最前并激活。
+    Windows有前台锁定限制：非当前前台线程直接调用SetForegroundWindow经常被系统静默忽略，
+    窗口API层面显示visible=True，但实际停在原位、被其他窗口盖住，用户看不到——
+    通过AttachThreadInput临时把自己的输入线程"接"到目标窗口线程上，可以绕过该限制。"""
+    try:
+        if win32gui.IsIconic(hwnd):
+            win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+        else:
+            win32gui.ShowWindow(hwnd, win32con.SW_SHOW)
+
+        fg_hwnd = win32gui.GetForegroundWindow()
+        fg_thread, _ = win32process.GetWindowThreadProcessId(fg_hwnd) if fg_hwnd else (0, 0)
+        target_thread, _ = win32process.GetWindowThreadProcessId(hwnd)
+        cur_thread = win32api.GetCurrentThreadId()
+
+        attached_fg = fg_thread and fg_thread != target_thread and win32process.AttachThreadInput(fg_thread, target_thread, True)
+        attached_cur = cur_thread != target_thread and win32process.AttachThreadInput(cur_thread, target_thread, True)
+        try:
+            win32gui.BringWindowToTop(hwnd)
+            win32gui.SetForegroundWindow(hwnd)
+        finally:
+            if attached_fg:
+                win32process.AttachThreadInput(fg_thread, target_thread, False)
+            if attached_cur:
+                win32process.AttachThreadInput(cur_thread, target_thread, False)
+        return True
+    except Exception as e:
+        logger.warning("强制置前窗口失败（hwnd=%s）: %s", hwnd, e)
+        return False
+
+def force_window_opaque(hwnd):
+    """部分软件用WS_EX_LAYERED做窗口淡入动画，通过自动化方式启动时该动画可能卡住，
+    导致窗口alpha一直停在0（完全透明）——窗口本身可见、位置正常，但人眼什么都看不到，
+    表现为“打开了但没有窗口”。这里直接读取当前layered属性，如果alpha不是255就强制拉满。"""
+    try:
+        ex_style = win32gui.GetWindowLong(hwnd, win32con.GWL_EXSTYLE)
+        if not (ex_style & win32con.WS_EX_LAYERED):
+            return
+        _, alpha, flags = win32gui.GetLayeredWindowAttributes(hwnd)
+        if alpha < 255:
+            win32gui.SetLayeredWindowAttributes(hwnd, 0, 255, win32con.LWA_ALPHA)
+            logger.info("检测到窗口透明度异常（alpha=%s），已强制设为不透明", alpha)
+    except Exception as e:
+        logger.warning("修正窗口透明度失败（hwnd=%s）: %s", hwnd, e)
+
+def bring_window_to_front_by_pid(pid, timeout=20):
+    """按pid定位窗口（不依赖标题/截图），移到左上角、修正透明度异常并强制置于前台"""
+    hwnd = find_visible_hwnd_by_pid(pid, timeout=timeout)
+    if not hwnd:
+        logger.warning("等待%s秒仍未找到pid=%s的可见窗口，跳过置前", timeout, pid)
+        return False
+    try:
+        left, top, right, bottom = win32gui.GetWindowRect(hwnd)
+        win32gui.MoveWindow(hwnd, 0, 0, right - left, bottom - top, True)
+    except Exception as e:
+        logger.warning("移动窗口位置失败（hwnd=%s）: %s", hwnd, e)
+    force_window_opaque(hwnd)
+    ok = force_window_foreground(hwnd)
+    if ok:
+        logger.info("已将窗口置于前台，标题: %s", win32gui.GetWindowText(hwnd))
+    return ok
+
+def dismiss_timezone_warning(timeout=15, interval=1):
+    """荼蘼启动时如果检测到系统时区不是"中国北京"会弹出"警告"对话框；
+    按需求点击"否"继续启动软件，不自动修改系统时区。找不到弹窗则直接返回，不影响后续流程。"""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        windows = findwindows.find_elements(title_re=".*警告.*", backend="uia")
+        if windows:
+            try:
+                app = Application(backend="uia").connect(handle=windows[0].handle)
+                dlg = app.window(handle=windows[0].handle)
+                dlg.child_window(title="否(N)", control_type="Button").click()
+                logger.info("检测到时区警告弹窗，已点击“否”继续启动")
+                return True
+            except Exception as e:
+                logger.warning("点击时区警告弹窗“否”按钮失败: %s", e)
+                return False
+        time.sleep(interval)
+    return False
+
+def ensure_script_software_open():
+    """如果荼蘼未运行，则自动打开；返回荼蘼进程pid（找不到则返回None）"""
+    tu_mi_pid = find_pid_by_keyword("荼蘼")
+    if tu_mi_pid:
+        logger.info("检测到荼蘼已在运行（pid=%s），跳过启动", tu_mi_pid)
+    else:
+        script_path = config["global_settings"]["script_path"]
+        logger.info("未检测到荼蘼进程，正在自动启动: %s", script_path)
+        try:
+            os.startfile(script_path)
+        except Exception as e:
+            logger.error("启动荼蘼失败: %s", e)
+            return None
+        tu_mi_pid = wait_for_process_by_keyword("荼蘼", timeout=30)
+        if not tu_mi_pid:
+            logger.warning("等待超时，未检测到荼蘼进程，继续后续流程")
+            return None
+        # 部分电脑系统时区不是"中国北京"时，荼蘼启动过程中会弹出警告框；
+        # 按需求点击"否"继续启动软件，不修改系统时区
+        dismiss_timezone_warning(timeout=15)
+    # 新启动/已在运行的荼蘼窗口不一定在最前面，可能被终端/IDE等其他窗口挡住，
+    # 此时基于截图的图像识别永远找不到tu_mi_logo，表现为“启动了但没有窗口出现”；
+    # 按pid强制置前，绕过前台锁定限制
+    bring_window_to_front_by_pid(tu_mi_pid, timeout=config["global_settings"]["software_init_delay"])
+    # 首次启动可能弹出初始化按钮，尝试点击，找不到则跳过，不影响后续流程
+    try:
+        wait_image_and_click(config["global_settings"]["images"]['tu_mi_initialize'], max_retries=3)
+    except Exception:
+        logger.info("未检测到荼蘼初始化按钮，跳过")
+    return tu_mi_pid
+
 def open_script_window():
+    tu_mi_pid = ensure_script_software_open()
     wait_image_and_click(config["global_settings"]["images"]['tu_mi_logo'])
     time.sleep(5)
-    script_window = pwc.getWindowsWithTitle('荼蘼')[0]
-    script_window.moveTo(0, 0)
-    script_window.activate()
+    if tu_mi_pid:
+        bring_window_to_front_by_pid(tu_mi_pid, timeout=5)
+    else:
+        script_window = pwc.getWindowsWithTitle('荼蘼')[0]
+        script_window.moveTo(0, 0)
+        script_window.activate()
     wait_image_and_click(config["global_settings"]["images"]['tu_mi_main'])
     pyautogui.click(123, 87)
-    return script_window
+    return pwc.getWindowsWithTitle('荼蘼')[0]
 
 def get_roles():
     """获取所有启用的角色，按优先级排序"""
@@ -74,6 +225,51 @@ def run_as_admin_powershell(program_path, arguments=None):
     else:
         logger.info("程序可能被用户取消：%s, %s", program_path, result.stderr)
 
+def wait_for_process_by_keyword(keyword, timeout=30, interval=1):
+    """轮询等待可执行文件路径中包含keyword的进程启动，返回其pid，超时返回None"""
+    keyword = keyword.lower()
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        for proc in psutil.process_iter(['pid', 'exe']):
+            try:
+                exe = proc.info['exe']
+                if exe and keyword in exe.lower():
+                    return proc.info['pid']
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+        time.sleep(interval)
+    return None
+
+def minimize_window_by_pid(pid, timeout=15, interval=1):
+    """通过进程pid查找其可见顶层窗口并最小化，找不到则返回False，不抛异常。
+    idv-login新版本不再有固定的窗口标题，按pid定位比按标题匹配更稳健。"""
+    hwnd = find_visible_hwnd_by_pid(pid, timeout=timeout, interval=interval)
+    if hwnd:
+        win32gui.ShowWindow(hwnd, win32con.SW_MINIMIZE)
+        logger.info("已最小化idv-login窗口，标题: %s", win32gui.GetWindowText(hwnd))
+        return True
+    logger.warning("未能找到idv-login的可见窗口（pid=%s），跳过最小化", pid)
+    return False
+
+def kill_process_tree(pid):
+    """终止指定pid及其所有子进程（idv-login可能会派生子进程，如渠道服账号管理窗口）"""
+    try:
+        parent = psutil.Process(pid)
+        children = parent.children(recursive=True)
+        for child in children:
+            try:
+                child.terminate()
+            except psutil.NoSuchProcess:
+                pass
+        psutil.wait_procs(children, timeout=5)
+        parent.terminate()
+        parent.wait(timeout=5)
+        logger.info("已关闭idv-login进程（pid=%s）及其子进程", pid)
+    except psutil.NoSuchProcess:
+        logger.info("idv-login进程（pid=%s）已不存在，无需关闭", pid)
+    except Exception as e:
+        logger.error("关闭idv-login进程时发生错误: %s", e)
+
 def wait_image_and_click(image_path, region=None, max_retries = 200):
     find_flag = False
     retries = 0
@@ -94,12 +290,15 @@ def wait_image_and_click(image_path, region=None, max_retries = 200):
             logger.info("未找到图片: %s，继续寻找...", image_path)
 
 def open_clx_and_login(role):
+    idv_pid = None
     # 桉桉不是官服，不能直接登录，要借助外部脚本idv
     if role['name'] == "an_an":
-        run_as_admin_powershell(config["global_settings"]["idv_login_path"], '--mitm')
-        time.sleep(20)
-        idv_window = pwc.getWindowsWithTitle('C:\\Users\\74484\\Downloads\\idv-login-v5.7.3-stable-Py3.8.exe')[0]
-        idv_window.minimize()
+        run_as_admin_powershell(config["global_settings"]["idv_login_path"], '--open-ui')
+        idv_pid = wait_for_process_by_keyword("idv-login", timeout=30)
+        if idv_pid:
+            minimize_window_by_pid(idv_pid, timeout=15)
+        else:
+            logger.warning("等待超时，未检测到idv-login进程，继续后续流程")
     # 打开一梦江湖
     open_software(config["global_settings"]["software_path"])
     time.sleep(20)
@@ -113,10 +312,14 @@ def open_clx_and_login(role):
         pyautogui.press('pagedown')
         pyautogui.press('pagedown')
         wait_image_and_click(config["global_settings"]["images"]['an_login'], max_retries=5)
-        an_login_windows = pwc.getWindowsWithTitle('渠道服账号管理 - Google Chrome')
+        idv_channel_title = config["global_settings"]["titles"]["idv_channel_account"]
+        an_login_windows = pwc.getWindowsWithTitle(idv_channel_title)
         if len(an_login_windows) > 0:
             an_login_windows[0].minimize()
         time.sleep(10)
+        # 桉桉登录完成，关闭idv-login，其他角色不依赖该进程，不受影响
+        if idv_pid:
+            kill_process_tree(idv_pid)
     else:
         # 截图账号下拉框倒三角，确定region，wait_image_and_click(2100, 980, 2220, 1100)
         wait_image_and_click(config["global_settings"]["images"]['account_selection'],

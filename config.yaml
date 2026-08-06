@@ -125,12 +125,13 @@ global_settings:
   # 软件位置
   software_path: "C:\\Users\\74484\\Downloads\\wyclx\\wyclx\\Launcher.exe"
   script_path: "C:\\Users\\74484\\Downloads\\荼蘼.exe"
-  idv_login_path: "C:\\Users\\74484\\Downloads\\idv-login-v5.7.3-stable-Py3.8.exe"
+  idv_login_path: "C:\\ProgramData\\idv-login\\点我启动工具.bat"
 
   # 软件 title
   titles:
     scripts: '荼蘼'     # 最大重试次数
     retry_delay: '一梦江湖'   # 重试延迟时间
+    idv_channel_account: '网易渠道服工具 - Google Chrome'   # idv-login弹出的渠道服账号管理窗口标题
 
   regions:
     tray: (3269, 2068, 555, 80)
