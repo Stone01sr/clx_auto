@@ -1,0 +1,136 @@
+# config.yaml
+# 角色配置列表
+roles:
+  - name: "stone"  # 角色名称
+    account_image: "res/stone_account.png"           # 账号图片
+    login_role_image: "res/stone_role_login.png"     # 登录页面角色选择图片
+    script_image: "res/stone_script_item.png"        # 角色要挂的脚本图片
+    enable: true
+
+  - name: "guang"
+    account_image: "res/guang_account.png"
+    login_role_image: "res/guang_role_login.png"
+    script_image: "res/guang_script_item.png"
+    enable: true
+
+  - name: "qi"
+    account_image: "res/qi_account.png"
+    login_role_image: "res/qi_role_login.png"
+    script_image: "res/guang_script_item.png"
+    enable: true
+
+  - name: "lao_mo"
+    account_image: "res/lao_mo_account.png"
+    login_role_image: "res/lao_mo_role_login.png"
+    script_image: "res/lao_mo_script_item.png"
+    enable: true
+
+  - name: "tu_dou"
+    account_image: "res/tu_dou_account.png"
+    login_role_image: "res/tu_dou_role_login.png"
+    script_image: "res/guang_script_item.png"
+    enable: true
+
+  - name: "zhan_ye"
+    account_image: "res/zhan_ye_account.png"
+    login_role_image: "res/zhan_ye_role_login.png"
+    script_image: "res/zhan_ye_script_item.png"
+    enable: true
+
+  - name: "lu"
+    account_image: "res/lu_account.png"
+    login_role_image: "res/lu_role_login.png"
+    script_image: "res/guang_script_item.png"
+    enable: true
+
+  - name: "hao_wen"
+    account_image: "res/hao_wen_account.png"
+    login_role_image: "res/hao_wen_role_login.png"
+    script_image: "res/guang_script_item.png"
+    enable: false
+
+  - name: "su_zhi"
+    account_image: "res/su_zhi_account.png"
+    login_role_image: "res/su_zhi_role_login.png"
+    script_image: "res/guang_script_item.png"
+    enable: false
+
+  - name: "qing"
+    account_image: "res/qing_account.png"
+    login_role_image: "res/qing_role_login.png"
+    script_image: "res/qing_script_item.png"
+    enable: false
+
+  - name: "yu_gou"
+    account_image: "res/yu_gou_account.png"
+    login_role_image: "res/yu_gou_role_login.png"
+    script_image: "res/yu_gou_script_item.png"
+    enable: false
+
+  - name: "an_an"
+    login_role_image: "res/an_role_login.png"     # 登录页面角色选择图片
+    script_image: "res/an_script_item.png"        # 角色要挂的脚本图片
+    enable: false
+
+# 全局配置
+global_settings:
+  # 点位
+  points:
+    select_account:
+      x: 2170
+      y: 1043
+    login:
+      x: 1909
+      y: 1211
+    select_role:
+      x: 1930
+      y: 1250
+    enter_game:
+      x: 2422
+      y: 1409
+    script_refresh:
+      x: 315
+      y: 658
+    script_choose_base:
+      x: 952
+      y: 116
+    script_run_base:
+      x: 1178
+      y: 119
+
+  images:
+    init_known: "res/init_known.png"
+    other_account: "res/other_account.png"
+    logo: "res/logo.png"
+    an_login: "res/an_account_login.png"
+    login_enter_game: "res/login_enter_game.png"
+    role_enter_game: "res/role_enter_game.png"
+    account_selection: "res/account_selection.png"
+    role_selection: "res/role_selection.png"
+    dream_server: "res/dream_server.png"
+    dream_checkbox: "res/dream_checkbox.png"
+    tu_mi_logo: "res/tu_mi_logo.png"
+    tu_mi_link: "res/tu_mi_link.png"
+    tu_mi_main: "res/tu_mi_main.png"
+    tu_mi_initialize: "res/tu_mi_initialize.png"
+
+
+  # 等待时间设置（单位：秒）
+  global_delay: 2.0
+  software_init_delay: 20
+
+  # 脚本相邻item 之间高度差
+  script_item_interval: 40
+
+  # 软件位置
+  software_path: "C:\\Users\\74484\\Downloads\\wyclx\\wyclx\\Launcher.exe"
+  script_path: "C:\\Users\\74484\\Downloads\\荼蘼.exe"
+  idv_login_path: "C:\\Users\\74484\\Downloads\\idv-login-v5.7.3-stable-Py3.8.exe"
+
+  # 软件 title
+  titles:
+    scripts: '荼蘼'     # 最大重试次数
+    retry_delay: '一梦江湖'   # 重试延迟时间
+
+  regions:
+    tray: (3269, 2068, 555, 80)
