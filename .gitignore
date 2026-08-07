@@ -11,3 +11,9 @@ CONTEXT.md
 # 队列运行时数据（每日状态JSON与荼蘼截图留档）
 /state/
 /screenshots/
+
+# 新增/修改角色时自动生成的配置备份
+config.yaml.*.bak
+
+# 标定检查工具生成的标注图
+标定检查图.png

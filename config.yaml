@@ -8,9 +8,9 @@ roles:
     enable: true
 
   - name: "guang"
-    account_image: "res/guang_account.png"
-    login_role_image: "res/guang_role_login.png"
-    script_image: "res/guang_script_item.png"
+    account_image: "res/guang_account.png"          # 账号图片
+    login_role_image: "res/guang_role_login.png"    # 登录页面角色选择图片
+    script_image: "res/stone_script_item.png"       # 角色要挂的脚本图片
     enable: true
 
   - name: "qi"
@@ -73,31 +73,48 @@ roles:
     channel_account: true                          # 渠道服账号，需借助idv-login辅助登录，不能直接登录
     enable: true
 
+  - name: "xiao_hong_mao"
+    account_image: "res/xiao_hong_mao_account.png"  # 账号图片
+    login_role_image: "res/xiao_hong_mao_role_login.png"# 登录页面角色选择图片
+    script_image: "res/guang_script_item.png"       # 角色要挂的脚本图片
+    enable: true
+
+  - name: "zhu_han"
+    account_image: "res/zhu_han_account.png"        # 账号图片
+    login_role_image: "res/zhu_han_role_login.png"  # 登录页面角色选择图片
+    script_image: "res/zhu_han_script_item.png"     # 角色要挂的脚本图片
+    enable: true
+
 # 全局配置
 global_settings:
-  # 点位
+  # 点位（绝对屏幕像素坐标，换分辨率/缩放比例必须重新标定）
   points:
-    select_account:
-      x: 2170
-      y: 1043
-    login:
-      x: 1909
-      y: 1211
-    select_role:
+    select_role:              # 游戏登录界面的角色选择下拉框
       x: 1930
       y: 1250
-    enter_game:
-      x: 2422
-      y: 1409
-    script_refresh:
-      x: 315
-      y: 658
-    script_choose_base:
+    tu_mi_daily_menu:         # 荼蘼左侧导航栏的"日常"菜单
+      x: 123
+      y: 87
+    script_choose_base:       # 荼蘼第1行的"方案选择"框，其余行按 monitor_settings.row.height 推算
       x: 952
       y: 116
-    script_run_base:
+    script_run_base:          # 荼蘼第1行的"开始"按钮，其余行同上
       x: 1178
       y: 119
+    script_dropdown_offset_y: 30   # 方案下拉列表展开后，第一个选项相对方案框的纵向偏移
+
+  # 图像查找的搜索范围，缩小范围既能提速也能避免匹配到屏幕别处的相似内容
+  # 注意四个数是 (左, 上, 宽, 高)，不是四个角的坐标
+  regions:
+    account_list:             # 账号下拉列表的搜索范围
+      left: 2100
+      top: 980
+      width: 2220
+      height: 1100
+    script_list:              # 方案下拉列表的搜索范围；上边界由程序按角色所在行号算出，故此处不配 top
+      left: 0
+      width: 1500
+      height: 1200
 
   images:
     init_known: "res/init_known.png"
@@ -107,46 +124,109 @@ global_settings:
     login_enter_game: "res/login_enter_game.png"
     role_enter_game: "res/role_enter_game.png"
     account_selection: "res/account_selection.png"
-    role_selection: "res/role_selection.png"
     dream_server: "res/dream_server.png"
     dream_checkbox: "res/dream_checkbox.png"
     tu_mi_logo: "res/tu_mi_logo.png"
-    tu_mi_link: "res/tu_mi_link.png"
     tu_mi_main: "res/tu_mi_main.png"
-    tu_mi_initialize: "res/tu_mi_initialize.png"
+    tu_mi_refresh: "res/tu_mi_refresh.png"   # 荼蘼的刷新按钮（双箭头图标）
 
+  # 图像识别参数
+  image_match:
+    confidence: 0.8               # 图像匹配相似度阈值（0~1），调低更宽松但容易误匹配
+    retry_interval_sec: 5         # 每次没找到图片后，等多久再重试
+    default_max_retries: 200      # 找图的默认重试次数上限（未单独指定时用这个）
 
-  # 等待时间设置（单位：秒）
-  global_delay: 2.0
-  software_init_delay: 20
+  # 各步骤找图的重试次数上限，超过即判定该步骤失败
+  retries:
+    other_account: 10             # 渠道服登录：切换到"其他账号"
+    logo: 10                      # 渠道服登录：点击游戏logo
+    an_login: 5                   # 渠道服登录：点击渠道服账号
+    account_selection: 5          # 官服登录：展开账号下拉框
+    login_enter_game: 5           # 官服登录：点击登录
+    dream_checkbox: 1             # 取消勾选梦境私服（没勾选时本来就找不到，1次即可）
+    role_enter_game: 5            # 角色选好后点击进入游戏
+    tu_mi_refresh: 5              # 点击荼蘼的刷新按钮
 
-  # 脚本相邻item 之间高度差
-  script_item_interval: 40
+  # 账号下拉列表的翻找设置：列表里账号很多时，要靠方向键逐条下移来找目标账号
+  account_list_scroll:
+    first_press_count: 6          # 第一轮先连按几次方向键（跳过顶部常用账号）
+    next_press_min: 1             # 之后每轮随机按 min~max 次，避免固定步长永远错过某一条
+    next_press_max: 3
+    max_attempts: 20              # 最多找多少轮，超过判定找不到该账号
+    channel_pagedown_count: 2     # 渠道服账号排在列表靠后，先整页往下翻几次再找
+
+  # 登录页角色列表滚动查找设置
+  # 账号下的角色较多时，要选的角色不会全部显示在首屏，需要向下滚动翻页才能找到
+  role_list_scroll:
+    point:              # 滚动时鼠标停放的位置，必须落在角色列表区域内（滚轮只对光标下的控件生效）
+      x: 1930
+      y: 1250
+    clicks: -3          # 每次滚动的滚轮格数，负数向下；建议略小于一屏，宁可两屏重叠也不要跳过角色
+    max_scrolls: 6      # 单轮最多向下滚动次数（实际角色很少超过3页，这里留了余量）
+    max_rounds: 3       # 从头到尾扫完一轮仍没找到时，滚回顶部重来的总轮数（应对列表尚未渲染完）
+
+  # 等待时间设置（单位：秒）。界面卡顿、机器较慢时可以整体调大
+  delays:
+    global: 2.0                   # 每次鼠标键盘操作后的统一等待（pyautogui.PAUSE）
+    software_init: 20             # 荼蘼启动后等窗口出现的时长
+    after_game_launch: 20         # 点开游戏启动器后，等客户端加载到登录界面
+    after_tu_mi_logo: 5           # 点击荼蘼托盘图标后等主界面弹出
+    after_login: 5                # 登录动作完成后的缓冲
+    after_channel_login: 10       # 渠道服账号登录后等待跳转
+    after_page_switch: 3          # 页面/列表切换后等重绘
+    after_role_selected: 10       # 选好角色后等界面响应
+    after_enter_game: 5           # 点击进入游戏后的缓冲
+    after_script_dropdown: 3      # 展开荼蘼方案下拉列表后等列表渲染
+    relogin_wait: 1800            # 启动时发现残留游戏窗口，关掉后要等多久才能重新登录（游戏的重复登录限制）
+
+  # 各种等待超时（单位：秒），超过即放弃并记录日志
+  timeouts:
+    find_window: 15               # 按pid查找可见窗口
+    bring_to_front: 20            # 把窗口移到前台
+    wait_process: 30              # 等待某个进程启动
+    timezone_warning: 15          # 等待荼蘼的时区警告弹窗出现
+    tu_mi_front: 5                # 荼蘼主界面出现后再置前一次
+    find_tu_mi_window: 5          # 监控线程定位荼蘼窗口
+    new_game_window: 30           # 等待新开的游戏客户端窗口出现
+    kill_process: 5               # 结束进程后等它真正退出
+    poll_interval: 1              # 上述各类轮询的间隔
 
   # 软件位置
   software_path: "C:\\Users\\74484\\Downloads\\wyclx\\wyclx\\Launcher.exe"
   script_path: "C:\\Users\\74484\\Downloads\\荼蘼.exe"
   idv_login_path: "C:\\ProgramData\\idv-login\\点我启动工具.bat"
 
-  # 软件 title
-  titles:
-    scripts: '荼蘼'     # 最大重试次数
-    retry_delay: '一梦江湖'   # 重试延迟时间
-    idv_channel_account: '网易渠道服工具 - Google Chrome'   # idv-login弹出的渠道服账号管理窗口标题
+  # 进程识别关键字：按可执行文件路径中是否包含该关键字来定位进程
+  process_keywords:
+    tu_mi: '荼蘼'
+    idv_login: 'idv-login'
 
-  regions:
-    tray: (3269, 2068, 555, 80)
+  # 窗口标题与按钮文字。游戏/荼蘼改版或换语言版本时改这里，不用动代码
+  titles:
+    tu_mi: '荼蘼'                                          # 荼蘼主窗口标题
+    clx: '一梦江湖'                                         # 游戏客户端窗口标题
+    idv_channel_account: '网易渠道服工具 - Google Chrome'    # idv-login弹出的渠道服账号管理窗口标题
+    timezone_warning: '.*警告.*'                            # 系统时区不是北京时间时荼蘼弹的警告框（正则）
+    timezone_warning_button: '否(N)'                        # 上述警告框里"不修改时区"的按钮
+    tu_mi_error_popup: '.*错误.*插件版本.*'                  # 游戏异常退出时荼蘼弹的错误框（正则）
+    tu_mi_error_popup_button: '确定'                        # 上述错误框的确认按钮
 
 # 队列相关配置（脚本运行队列功能）
 queue_settings:
-  max_concurrent: 6          # 同时运行角色数（并发槽位，即"运行队列最大容量"）
+  max_concurrent: 6          # 同时运行角色数（并发槽位，即"运行队列最大容量"），受内存限制且不能超过max_visible_rows
   pending_timeout_sec: 1800  # 待运行状态超时时间（30分钟），超时判定为失败
   max_retries: 3             # 自动重试次数上限，超过后标记为失败/待处理，需人工介入
+  idle_poll_interval_sec: 5  # 并发槽位满时，调度器多久回头看一次有没有空出来
+  wait_log_interval_sec: 60  # 调度器空转等待时，多久打印一次队列状态（避免刷屏）
 
 # 荼蘼状态监控相关配置
 monitor_settings:
   screenshot_interval_sec: 300  # 荼蘼状态截图轮询间隔（默认5分钟）
   max_visible_rows: 10           # 荼蘼面板可见的角色行数，需按实际界面校准
+  stop_join_timeout_sec: 10      # 程序收尾时等监控线程退出的最长时间
+  # 行底色判定的容差：某个通道比另两个通道高出这个数才算"偏该色"。
+  # 已用真实截图校准——运行中的行是(144,238,144)浅绿，异常退出的行是(255,192,203)粉红，容差40能正确区分
+  color_tolerance: 40
   row:
     top_y: 100                  # 第一行最上边缘的绝对y坐标（已标定）
     height: 40                  # 单行实际高度（已标定）
