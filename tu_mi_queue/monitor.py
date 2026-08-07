@@ -19,7 +19,7 @@ def capture_tu_mi_screenshot(hwnd):
     return pyautogui.screenshot(region=(left, top, right - left, bottom - top))
 
 
-def read_row_status(screenshot, row_cfg, status_templates, row_index):
+def read_row_status(screenshot, row_cfg, status_templates, row_index, color_tolerance, confidence):
     """读取截图中某一行的运行态颜色和荼蘼原始状态文字。
     行颜色（绿=运行中/白=空闲）用于判断行是否空闲、以及运行完成；PENDING->RUNNING的判断
     需要颜色和文字两个信号同时满足才切换，文字识别不到时统一返回"未知"，不能单凭"未知"
@@ -40,15 +40,15 @@ def read_row_status(screenshot, row_cfg, status_templates, row_index):
         rgb = row_image.getpixel((content_left_x + color_point["x"], color_point["y"]))
     except Exception:
         rgb = None
-    is_running_color = _is_green(rgb)
-    is_abnormal_color = _is_red(rgb)
+    is_running_color = _is_green(rgb, color_tolerance)
+    is_abnormal_color = _is_red(rgb, color_tolerance)
 
     text_region = row_cfg["status_text_region"]
     text_crop = row_image.crop((
         content_left_x + text_region["x1"], text_region["y1"],
         content_left_x + text_region["x2"], text_region["y2"],
     ))
-    raw_status, match_detail = _match_status_text(text_crop, status_templates)
+    raw_status, match_detail = _match_status_text(text_crop, status_templates, confidence)
 
     return {
         "is_running_color": is_running_color,
@@ -59,9 +59,10 @@ def read_row_status(screenshot, row_cfg, status_templates, row_index):
     }
 
 
-def scan_rows(screenshot, row_cfg, max_rows, status_templates):
+def scan_rows(screenshot, row_cfg, max_rows, status_templates, color_tolerance, confidence):
     """扫描截图中所有可见行的状态，返回 {行号: 状态信息}"""
-    return {i: read_row_status(screenshot, row_cfg, status_templates, i) for i in range(max_rows)}
+    return {i: read_row_status(screenshot, row_cfg, status_templates, i, color_tolerance, confidence)
+            for i in range(max_rows)}
 
 
 def find_topmost_empty_row(row_statuses):
@@ -72,14 +73,14 @@ def find_topmost_empty_row(row_statuses):
     return None
 
 
-def _is_green(rgb, tolerance=40):
+def _is_green(rgb, tolerance):
     if not rgb:
         return False
     r, g, b = rgb[:3]
     return g > r + tolerance and g > b + tolerance
 
 
-def _is_red(rgb, tolerance=40):
+def _is_red(rgb, tolerance):
     """行背景变红(粉色)=游戏客户端异常退出（配合荼蘼弹出的错误框一起出现）。
     已用真实截图校准：异常行在status_color_point采到的是RGB(255,192,203)，
     正常运行的绿色行是RGB(144,238,144)，容差40能正确区分两者。"""
@@ -89,13 +90,13 @@ def _is_red(rgb, tolerance=40):
     return r > g + tolerance and r > b + tolerance
 
 
-def _match_status_text(text_image, status_templates):
+def _match_status_text(text_image, status_templates, confidence):
     """依次尝试每个状态模板，返回(识别到的状态名或"未知", 每个模板尝试结果的明细列表)，
     明细列表供调用方写进日志，方便排查具体是哪个模板没匹配上、还是文件根本不存在。"""
     detail = []
     for name, template_path in status_templates.items():
         try:
-            if pyautogui.locate(template_path, text_image, confidence=0.8):
+            if pyautogui.locate(template_path, text_image, confidence=confidence):
                 detail.append(f"{name}:匹配成功")
                 return name, detail
             detail.append(f"{name}:未匹配")
@@ -133,6 +134,9 @@ class TuMiMonitor:
         self.max_rows = monitor_cfg["max_visible_rows"]
         self.row_cfg = monitor_cfg["row"]
         self.status_templates = monitor_cfg.get("status_templates", {})
+        self.color_tolerance = monitor_cfg["color_tolerance"]
+        self.confidence = config["global_settings"]["image_match"]["confidence"]
+        self.stop_join_timeout = monitor_cfg["stop_join_timeout_sec"]
         self.pending_timeout = queue_cfg["pending_timeout_sec"]
         self.max_retries = queue_cfg["max_retries"]
         self._stop_event = threading.Event()
@@ -147,7 +151,7 @@ class TuMiMonitor:
     def stop(self):
         self._stop_event.set()
         if self._thread:
-            self._thread.join(timeout=10)
+            self._thread.join(timeout=self.stop_join_timeout)
         logger.info("荼蘼状态监控线程已停止")
 
     def _run_loop(self):
@@ -172,7 +176,8 @@ class TuMiMonitor:
         moment = datetime.datetime.now()
         screenshot_path = self.state_store.save_screenshot(today, screenshot, moment)
 
-        row_statuses = scan_rows(screenshot, self.row_cfg, self.max_rows, self.status_templates)
+        row_statuses = scan_rows(screenshot, self.row_cfg, self.max_rows, self.status_templates,
+                                  self.color_tolerance, self.confidence)
 
         with self.queue_state.lock:
             active = list(self.queue_state.active.items())

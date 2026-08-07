@@ -85,6 +85,18 @@ roles:
     script_image: "res/zhu_han_script_item.png"     # 角色要挂的脚本图片
     enable: true
 
+  - name: "stone_small"
+    account_image: "res/stone_small_account.png"    # 账号图片
+    login_role_image: "res/stone_small_role_login.png"  # 登录页面角色选择图片
+    script_image: "res/stone_small_script_item.png"  # 角色要挂的脚本图片
+    enable: true
+
+  - name: "xie"
+    account_image: "res/xie_account.png"            # 账号图片
+    login_role_image: "res/xie_role_login.png"      # 登录页面角色选择图片
+    script_image: "res/guang_script_item.png"       # 角色要挂的脚本图片
+    enable: true
+
 # 全局配置
 global_settings:
   # 点位（绝对屏幕像素坐标，换分辨率/缩放比例必须重新标定）

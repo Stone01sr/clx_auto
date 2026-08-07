@@ -60,7 +60,7 @@
 | ❌ 必须重做 | `config.yaml` 里的 `points` 坐标 | 绝对屏幕坐标，见[第五步](#第五步标定屏幕位置) |
 | ❌ 必须重做 | `monitor_settings.row` 标定 | 见[第六步](#第六步检查荼蘼面板标定) |
 | ❌ 必须重做 | 三个软件路径 | 见[第四步](#第四步填写你电脑上的软件位置) |
-| ⚠️ 可能要改 | 代码里的三处硬编码坐标 | 见[已知限制](#已知限制) |
+| ❌ 必须重做 | `config.yaml` 里的 `regions` 搜索范围 | 绝对屏幕坐标，见[第五步](#第五步标定屏幕位置) |
 | ✅ 可以直接用 | 所有代码 | 不用动 |
 | ✅ 可以直接用 | 并发数、超时、轮询间隔等参数 | `queue_settings` / `monitor_settings` / `storage_settings` |
 | ✅ 可以直接用 | 角色列表的"骨架" | 角色名、是否渠道服、是否启用可以保留，但**每个角色的三张图片都要重截** |
@@ -161,119 +161,110 @@ pip install -r requirements.txt
 
 程序靠"点击屏幕上的固定位置"来操作，所以要告诉它每个按钮在你屏幕的哪个坐标。**换了电脑、换了分辨率或缩放比例，都必须重做这一步。**
 
-### 5.1 一共要标 7 个位置
+好消息是：全部 7 项都填在 `config.yaml` 里，**不用改代码**。
 
-其中 **4 个填在 `config.yaml` 里**，另外 **3 个在代码里**（暂时还没做成配置项）。
-
-**打开游戏登录界面时标这些：**
-
-| 编号 | 要标什么 | 是什么 | 填到哪 |
-| --- | --- | --- | --- |
-| ① | `select_role` | **角色选择**下拉框 | `config.yaml` |
-| ② | `role_list_scroll.point` | 角色列表**中间**任意一点（滚轮翻页时鼠标停这儿） | `config.yaml` |
-| ③ | 账号列表搜索范围 | 一个**矩形范围**，能框住展开后的账号下拉列表 | 代码 `daily_cleanup.py` 第 390 行 |
-
-**打开荼蘼时标这些：**
-
-| 编号 | 要标什么 | 是什么 | 填到哪 |
-| --- | --- | --- | --- |
-| ④ | `script_choose_base` | **第 1 行**的"方案选择"框 | `config.yaml` |
-| ⑤ | `script_run_base` | **第 1 行**的"开始"按钮 | `config.yaml` |
-| ⑥ | 左侧"日常"菜单 | 左边导航栏最上面的 **"日常"** 那一项 | 代码 `daily_cleanup.py` 第 213 行 |
-| ⑦ | 方案列表搜索范围 | 一个**矩形范围**，能框住展开后的方案下拉列表 | 代码 `daily_cleanup.py` 第 491 行 |
-
-> - ④⑤ 只要标**第 1 行**，其他行程序会按行高自己算。
-> - 荼蘼的**刷新按钮不用标**，程序靠认图标找它。
-> - ③⑦ 是"**在这个范围里找图**"，用来避免在整个屏幕上乱找。范围**宁可大一点**，只要能完整盖住展开的列表就行。
-
-### 5.2 怎么量坐标
+### 5.1 先学会怎么量坐标
 
 1. 打开游戏走到登录界面，同时把荼蘼也打开。
 2. 双击项目文件夹里的 **`helper.py`**（双击打不开的话，在[第三步](#第三步安装程序需要的组件)那个黑窗口里输入 `python helper.py` 回车）。
 
    屏幕上会出现一个跟着鼠标跑的小方块，实时显示当前鼠标的坐标 `(x, y)`。
-3. 把鼠标移到目标位置，读出小方块上的两个数字记下来。
+3. 把鼠标移到目标位置，读出小方块上的两个数字记下来。按 `Ctrl + C` 或关掉窗口即可退出。
 
-**量"矩形范围"（③和⑦）要读两次**：先把鼠标移到范围的**左上角**读一组数，再移到**右下角**读一组数。然后这样换算：
+**要量"一个点"**（比如某个按钮）：把鼠标放到那个按钮**中间**，读一组 `x, y`。
 
-```
-左边界 left   = 左上角的 x
-上边界 top    = 左上角的 y
-宽度   width  = 右下角的 x － 左上角的 x
-高度   height = 右下角的 y － 左上角的 y
-```
-
-> ⚠️ 代码里写的是 `(左, 上, 宽, 高)`，**不是四个角的坐标**，别直接把右下角的坐标填进去。
-
-量完之后照着下面这张表把 7 组数字记全，再一次性改：
+**要量"一块矩形范围"**：读两次——先把鼠标移到范围的**左上角**读一组，再移到**右下角**读一组，然后换算：
 
 ```
-① select_role            x = ____  y = ____
-② role_list_scroll.point x = ____  y = ____
-③ 账号列表范围            左 = ____ 上 = ____ 宽 = ____ 高 = ____
-④ script_choose_base     x = ____  y = ____
-⑤ script_run_base        x = ____  y = ____
-⑥ 日常菜单               x = ____  y = ____
-⑦ 方案列表范围            左 = ____ 上 = ____ 宽 = ____ 高 = ____
+左 left   = 左上角的 x
+上 top    = 左上角的 y
+宽 width  = 右下角的 x － 左上角的 x
+高 height = 右下角的 y － 左上角的 y
 ```
 
-### 5.3 改 config.yaml（①②④⑤）
+> ⚠️ 配置里填的是 `左/上/宽/高`，**不是四个角的坐标**。别直接把右下角的坐标填进去。
+>
+> 💡 矩形范围是用来"在这块区域里找图"的，**宁可框大一点**，只要能完整盖住展开后的列表就行。
 
-用**记事本**打开 `config.yaml`，找到下面这两段，把数字换成你量到的：
+### 5.2 要量哪 7 个
+
+**打开游戏登录界面时量这些：**
+
+| 编号 | 量什么 | 类型 |
+| --- | --- | --- |
+| ① | **角色选择**下拉框 | 点 |
+| ② | 角色列表**中间**任意一点（滚轮翻页时鼠标停这儿） | 点 |
+| ③ | 能框住**展开后的账号下拉列表**的范围 | 矩形 |
+
+**打开荼蘼时量这些：**
+
+| 编号 | 量什么 | 类型 |
+| --- | --- | --- |
+| ④ | 左侧导航栏最上面的 **"日常"** 菜单 | 点 |
+| ⑤ | **第 1 行**的"方案选择"框 | 点 |
+| ⑥ | **第 1 行**的"开始"按钮 | 点 |
+| ⑦ | 能框住**展开后的方案下拉列表**的范围 | 矩形（只要左/宽/高） |
+
+> - ⑤⑥ 只要量**第 1 行**，其他行程序会按行高自己算。
+> - ⑦ 不用量"上边界"，程序会按角色所在的行号自己算。
+> - 荼蘼的**刷新按钮不用量**，程序靠认图标找它。
+
+量完照着这张表把数字记全，再一次性填进去：
+
+```
+① 角色选择下拉框    x = ____  y = ____
+② 角色列表中间      x = ____  y = ____
+③ 账号列表范围      左 = ____ 上 = ____ 宽 = ____ 高 = ____
+④ 日常菜单          x = ____  y = ____
+⑤ 方案选择框        x = ____  y = ____
+⑥ 开始按钮          x = ____  y = ____
+⑦ 方案列表范围      左 = ____           宽 = ____ 高 = ____
+```
+
+### 5.3 填进 config.yaml
+
+用**记事本**打开 `config.yaml`，找到 `points:` 和 `regions:` 这两段，把数字换成你量到的：
 
 ```yaml
   points:
-    select_role:            # ① 角色选择下拉框
+    select_role:              # ① 角色选择下拉框
       x: 1930
       y: 1250
-    script_choose_base:     # ④ 荼蘼第1行的"方案选择"框
+    tu_mi_daily_menu:         # ④ 荼蘼左侧导航栏的"日常"菜单
+      x: 123
+      y: 87
+    script_choose_base:       # ⑤ 荼蘼第1行的"方案选择"框
       x: 952
       y: 116
-    script_run_base:        # ⑤ 荼蘼第1行的"开始"按钮
+    script_run_base:          # ⑥ 荼蘼第1行的"开始"按钮
       x: 1178
       y: 119
+    script_dropdown_offset_y: 30   # 方案列表展开后第一个选项的纵向偏移，一般不用改
+
+  regions:
+    account_list:             # ③ 账号下拉列表的搜索范围
+      left: 2100
+      top: 980
+      width: 2220
+      height: 1100
+    script_list:              # ⑦ 方案下拉列表的搜索范围（不用填 top）
+      left: 0
+      width: 1500
+      height: 1200
 ```
+
+再往下找到 `role_list_scroll:`，填 ②：
 
 ```yaml
   role_list_scroll:
-    point:                  # ② 角色列表中间任意一点
+    point:                    # ② 角色列表中间任意一点
       x: 1930
       y: 1250
 ```
 
 改完保存（`Ctrl + S`）。
 
-### 5.4 改代码里的三处（③⑥⑦）
-
-用**记事本**打开 `daily_cleanup.py`，按 `Ctrl + G` 可以跳到指定行号。
-
-**⑥ 第 213 行** —— 荼蘼左侧的"日常"菜单：
-
-```python
-    pyautogui.click(123, 87)          # 把 123 和 87 换成你量到的 x, y
-```
-
-**③ 第 390 行** —— 账号列表的搜索范围：
-
-```python
-        wait_image_and_click(config["global_settings"]["images"]['account_selection'],
-                                region=(2100, 980, 2220, 1100), max_retries=5)
-                                #       左    上   宽    高   ← 换成你算出来的四个数
-```
-
-**⑦ 第 491 行** —— 方案列表的搜索范围：
-
-```python
-    script_pos = pyautogui.locateCenterOnScreen(role['script_image'], region=(0, y, 1500, 1200),
-                                                 grayscale=True, confidence=0.8)
-                                #  这里的 y 是程序自己算的，别动；只改 1500(宽) 和 1200(高)
-```
-
-改完保存。
-
-> 💡 这三处以后会挪进 `config.yaml`，届时就不用改代码了。改之前建议先把 `daily_cleanup.py` 复制一份备份。
-
----
+> 💡 保存后可以直接跑[第六步](#第六步检查荼蘼面板标定)的检查工具，它会顺带验证 `config.yaml` 有没有写坏（缩进错了会报错）。
 
 ## 第六步：检查荼蘼面板标定
 
@@ -330,21 +321,24 @@ pip install -r requirements.txt
 **② 问你是不是渠道服账号**：官服账号直接回车（默认"否"）。
 
 **③ 截取账号图片**：
-   - 把游戏切到前面，让**账号下拉列表展开着**
-   - 按键盘上的 **`F9`** —— 屏幕会被"拍照"定格
+   - 在黑窗口里按**回车**开始 8 秒倒计时（这时先别切窗口）
+   - 倒计时期间把游戏切到前面，让**账号下拉列表展开着**
+   - 倒计时结束，屏幕会被"拍照"定格
    - 在弹出的定格画面上，**按住鼠标左键拖动**，框住这个账号那一条，松开
    - 回到黑窗口，确认这张图可以就回车
 
 **④ 截取角色图片**：同样的方法，框住角色列表里这个角色那一条（带等级和名字的，比如"170级 帅气花岗岩"）。
 
-**⑤ 选脚本图片**：会列出已有的脚本图片，如果这个角色跑的方案和别人一样，直接输编号复用；不一样就输 `0`，然后把荼蘼的方案下拉列表展开，用同样的 F9 + 拖拽方式截一张。
+**⑤ 选脚本图片**：会列出已有的脚本图片，如果这个角色跑的方案和别人一样，直接输编号复用；不一样就输 `0`，然后用同样的「回车 → 倒计时期间展开荼蘼方案下拉列表 → 拖拽框选」方式截一张。
 
 **⑥ 确认写入**：看一眼要写进去的内容，回车确认。
 
 搞定！角色就加好了。
 
-> **为什么要按 F9 而不是回车？**
-> 因为下拉列表只要一点别的地方就会收起来。你要是切回黑窗口按回车，列表就收起来了，什么都截不到。按 F9 不需要切窗口，列表能一直开着。
+> **为什么是倒计时，而不是"调好界面再按个键"？**
+> 因为下拉列表只要一点别的地方就会收起来，所以不能让你调好界面后再切回黑窗口按键。
+> 那用热键呢？也不行——荼蘼和游戏客户端通常以管理员权限运行，Windows 出于安全考虑会**屏蔽**普通程序读取这类窗口获得焦点时的按键，表现就是"只有焦点在黑窗口时热键才管用"，而那恰恰是最没用的情况。
+> 倒计时不需要读键盘、也不需要抢焦点，所以一定能用。要是没来得及调好界面，截完选 `n` 重拍即可。
 
 > **中途关掉了怎么办？**
 > 没关系，已经截好的图会自动保存。重新运行、输入同一个角色名，它会问你"要直接用已经截好的图吗"，选是就能接着上次的进度往下走。
@@ -656,12 +650,17 @@ queue_settings:
 
 | 字段 | 说明 |
 | --- | --- |
-| `points` | 固定点击坐标（绝对屏幕像素）：`select_role`（角色下拉框）、`script_choose_base` / `script_run_base`（荼蘼第 1 行的方案框与开始按钮，其余行按 `monitor_settings.row.height` 推算） |
+| `points` | 固定点击坐标（绝对屏幕像素）：`select_role`、`tu_mi_daily_menu`、`script_choose_base` / `script_run_base`（荼蘼第 1 行，其余行按 `monitor_settings.row.height` 推算）、`script_dropdown_offset_y` |
+| `regions` | 图像搜索范围，格式为 `left / top / width / height`（**不是四个角坐标**）：`account_list` 账号下拉列表、`script_list` 方案下拉列表（`top` 由程序按行号算，不用配） |
 | `images` | 通用界面元素的图像模板路径，共 12 张：`init_known` / `other_account` / `logo` / `an_login` / `login_enter_game` / `role_enter_game` / `account_selection` / `dream_server` / `dream_checkbox` / `tu_mi_logo` / `tu_mi_main` / `tu_mi_refresh` |
-| `titles` | 仅 `idv_channel_account`：idv-login 弹出的渠道服账号管理窗口标题。荼蘼和一梦江湖的窗口标题目前是代码里硬编码的 |
-| `role_list_scroll` | 角色列表滚动查找：`point` 滚动时鼠标位置（必须落在列表内，滚轮只对光标下的控件生效）、`clicks` 每次滚动格数（负数向下，建议略小于一屏以保证重叠）、`max_scrolls` 单轮最大滚动次数、`max_rounds` 回顶重试轮数 |
-| `global_delay` | `pyautogui.PAUSE`，每次操作后的等待秒数，默认 2.0 |
-| `software_init_delay` | 荼蘼启动后等待窗口出现的超时秒数 |
+| `image_match` | `confidence` 匹配相似度阈值、`retry_interval_sec` 找图失败后的重试间隔、`default_max_retries` 默认重试上限 |
+| `retries` | 各步骤单独的找图重试次数上限（`other_account` / `logo` / `an_login` / `account_selection` / `login_enter_game` / `dream_checkbox` / `role_enter_game` / `tu_mi_refresh`） |
+| `account_list_scroll` | 账号列表用方向键逐条翻找的参数：`first_press_count` 首轮按键数、`next_press_min` / `next_press_max` 之后每轮的随机步长、`max_attempts` 最大轮数、`channel_pagedown_count` 渠道服账号先整页翻几次 |
+| `role_list_scroll` | 角色列表滚轮翻页：`point` 滚动时鼠标位置（必须落在列表内，滚轮只对光标下的控件生效）、`clicks` 每次滚动格数（负数向下，建议略小于一屏以保证重叠）、`max_scrolls` 单轮最大滚动次数、`max_rounds` 回顶重试轮数 |
+| `delays` | 11 项等待时长：`global`（即 `pyautogui.PAUSE`）、`software_init`、`after_game_launch`、`relogin_wait`（关掉残留游戏窗口后的等待，默认 1800）等 |
+| `timeouts` | 9 项超时：`find_window` / `bring_to_front` / `wait_process` / `new_game_window` / `kill_process` / `poll_interval` 等 |
+| `process_keywords` | 按可执行文件路径定位进程的关键字：`tu_mi` / `idv_login` |
+| `titles` | 窗口标题与按钮文字：`tu_mi` / `clx` / `idv_channel_account` / `timezone_warning`(正则) / `timezone_warning_button` / `tu_mi_error_popup`(正则) / `tu_mi_error_popup_button`。游戏或荼蘼改版、换语言版本时改这里 |
 | `software_path` / `script_path` / `idv_login_path` | 一梦江湖启动器、荼蘼、idv-login 的可执行文件路径 |
 
 ### `queue_settings` / `monitor_settings` / `storage_settings`
@@ -671,8 +670,12 @@ queue_settings:
 | `max_concurrent` | 6 | 同时挂机角色数（并发槽位 = 待运行+运行中的任务数上限）。受内存限制，且不能大于 `max_visible_rows`。调整方法见[调整同时挂机的角色数](#调整同时挂机的角色数并发数) |
 | `pending_timeout_sec` | 1800 | 「待运行」超时判定 |
 | `max_retries` | 3 | 自动重试上限 |
+| `idle_poll_interval_sec` | 5 | 并发槽位满时调度器的回查间隔 |
+| `wait_log_interval_sec` | 60 | 调度器空转等待时的日志打印间隔 |
 | `screenshot_interval_sec` | 300 | 监控截图轮询间隔 |
 | `max_visible_rows` | 10 | 荼蘼面板可见行数 |
+| `color_tolerance` | 40 | 行底色判定容差（某通道高出另两通道多少才算偏该色） |
+| `stop_join_timeout_sec` | 10 | 收尾时等监控线程退出的最长时间 |
 | `row` | — | 行位置标定：`top_y` / `height` / `content_left_x` / `status_color_point` / `status_text_region` |
 | `status_templates` | — | 荼蘼状态文字模板；缺失时只警告一次，状态机仍靠行颜色工作 |
 | `retention_days` | 30 | 状态与截图保留天数 |
@@ -711,7 +714,7 @@ clx_auto/
 │   └── state_store.py            # 每日状态JSON落盘、截图留存、过期数据清理
 ├── manage/
 │   ├── server.py                  # 本地状态查看页
-│   ├── roles.py                   # 角色管理：F9定格截屏框选 + 就地读写config.yaml
+│   ├── roles.py                   # 角色管理：倒计时定格截屏+框选 + 就地读写config.yaml
 │   ├── calibrate.py               # 荼蘼面板标定检查，生成带标注的检查图
 │   └── menu.py                    # 启动菜单.bat 调用的中文菜单
 ├── state/                        # 运行时数据：每日状态JSON（不入库）
@@ -723,10 +726,6 @@ clx_auto/
 
 - **强依赖屏幕坐标和图像识别**：换机器、换分辨率、换 DPI 缩放、界面改版都要重新标定，详见[从别人那里拿到这个项目](#️-从别人那里拿到这个项目先看这里)。
 - **图像匹配不做多尺度搜索**：`pyautogui.locateOnScreen(confidence=0.8)` 底层是单尺度 `matchTemplate`，模板与实际渲染尺寸不一致就必然失败，不会自动缩放去凑。这是模板不能跨分辨率复用的根本原因。
-- **代码里还有三处硬编码坐标**，换分辨率时需手动改（尚未迁到 `config.yaml`）：
-  - `daily_cleanup.py:213` — `pyautogui.click(123, 87)`
-  - `daily_cleanup.py:390` — 账号下拉框搜索区域 `region=(2100, 980, 2220, 1100)`
-  - `daily_cleanup.py:491` — 脚本方案搜索区域 `region=(0, y, 1500, 1200)`
 - **管理页面只读**：不能从页面手动重跑某个角色。
 - **单显示器假设**：多显示器环境坐标可能错乱，未做适配。
 - **修改角色会重写该角色的配置块**：块内自定义注释会被标准注释覆盖，其他角色和段落注释不受影响。

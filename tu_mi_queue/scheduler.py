@@ -14,8 +14,7 @@ class Scheduler:
     该角色就交给荼蘼后台挂机，不再占用自动化资源，真正的"并发"体现在荼蘼里同时挂着几个角色。"""
 
     def __init__(self, config, queue_state, role_lookup, setup_role_fn,
-                 find_tu_mi_hwnd_fn, close_window_fn, dismiss_error_popup_fn=None,
-                 idle_poll_interval=5, wait_log_interval=60):
+                 find_tu_mi_hwnd_fn, close_window_fn, dismiss_error_popup_fn=None):
         monitor_cfg = config["monitor_settings"]
         queue_cfg = config["queue_settings"]
         self.queue_state = queue_state
@@ -25,11 +24,13 @@ class Scheduler:
         self.close_window_fn = close_window_fn
         # 荼蘼弹出异常退出错误框时会挡住整个面板、可能干扰空闲行扫描，扫描前先点掉它
         self.dismiss_error_popup_fn = dismiss_error_popup_fn
-        self.idle_poll_interval = idle_poll_interval
-        self.wait_log_interval = wait_log_interval
+        self.idle_poll_interval = queue_cfg["idle_poll_interval_sec"]
+        self.wait_log_interval = queue_cfg["wait_log_interval_sec"]
         self.row_cfg = monitor_cfg["row"]
         self.max_rows = monitor_cfg["max_visible_rows"]
         self.status_templates = monitor_cfg.get("status_templates", {})
+        self.color_tolerance = monitor_cfg["color_tolerance"]
+        self.confidence = config["global_settings"]["image_match"]["confidence"]
         self.max_retries = queue_cfg["max_retries"]
         self._last_wait_log_at = 0
 
@@ -93,7 +94,8 @@ class Scheduler:
             except Exception:
                 logger.exception("扫描空闲行前检查/关闭荼蘼错误弹窗失败")
         screenshot = capture_tu_mi_screenshot(hwnd)
-        row_statuses = scan_rows(screenshot, self.row_cfg, self.max_rows, self.status_templates)
+        row_statuses = scan_rows(screenshot, self.row_cfg, self.max_rows, self.status_templates,
+                                  self.color_tolerance, self.confidence)
         logger.info("荼蘼行扫描结果（颜色/原始状态文字）: %s",
                     {i: ("绿" if v["is_running_color"] else "白", v["raw_status"])
                      for i, v in sorted(row_statuses.items())})

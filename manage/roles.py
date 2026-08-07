@@ -8,9 +8,12 @@
     python manage/roles.py
 
 截图分两步，是为了绕开"下拉列表一失去焦点就收起"的问题：
-先把目标界面（含展开的下拉列表）调好并保持在最前，按全局热键 F9 定格整屏；
-再在定格下来的静态图上拖拽框选目标区域。截图那一刻本程序不会抢焦点，
+先按回车开始倒计时，倒计时期间把目标界面（含展开的下拉列表）调好，时间一到自动定格整屏；
+再在定格下来的静态图上拖拽框选目标区域。定格那一刻本程序不会抢焦点，
 框选阶段面对的又是一张静态图，所以列表不会被收起。
+
+用倒计时而不是热键，是因为荼蘼和游戏客户端多以管理员权限运行，
+Windows 的 UIPI 会挡掉低权限进程对高权限窗口输入的读取，热键在那种情况下必然失效。
 """
 
 import datetime
@@ -22,8 +25,6 @@ import time
 import tkinter as tk
 
 import pyautogui
-import win32api
-import win32con
 import yaml
 from PIL import ImageTk
 
@@ -33,30 +34,30 @@ sys.path.insert(0, BASE_DIR)
 CONFIG_PATH = os.path.join(BASE_DIR, "config.yaml")
 RES_DIR = os.path.join(BASE_DIR, "res")
 
-# 触发定格截屏的全局热键。荼蘼的方案下拉列表、游戏的角色下拉列表都是一失去焦点就收起，
-# 所以不能让用户切回终端按回车触发，必须用不抢焦点的全局热键
-CAPTURE_HOTKEY_VK = win32con.VK_F9
-CAPTURE_HOTKEY_NAME = "F9"
+# 定格截屏前的倒计时秒数。留够时间让用户切到目标界面并把下拉列表展开
+CAPTURE_COUNTDOWN_SEC = 8
 
 # 角色名只允许蛇形命名，和config.yaml里已有的角色保持一致，同时保证能直接拼进图片文件名
 ROLE_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
-def wait_for_capture_hotkey():
-    """轮询全局键盘状态等待热键，按下热键返回True，按Esc取消返回False。
+def countdown_then_grab(seconds):
+    """倒计时结束后定格整屏，返回截图。
 
-    用 GetAsyncKeyState 查询全局按键状态，本程序全程不需要获得焦点，
-    用户可以让展开着下拉列表的目标窗口一直停在最前面。
+    这里刻意不用"按热键触发"：荼蘼和游戏客户端通常都以管理员权限运行，
+    而 Windows 的 UIPI 会阻止权限较低的进程读取高权限窗口获得焦点时的输入——
+    GetAsyncKeyState、低级键盘钩子、RegisterHotKey 全都会被挡掉，
+    表现就是"只有焦点在本程序窗口时热键才有反应"，那恰恰是最没用的情况。
+
+    倒计时完全不依赖输入捕获，也不需要本程序获得焦点，所以一定能用：
+    用户在倒计时期间从容切到目标界面、把下拉列表展开，时间一到自动定格。
     """
-    # 先读一次把两个键的历史状态清掉，避免把进入本函数之前的按键当成这次的触发
-    win32api.GetAsyncKeyState(CAPTURE_HOTKEY_VK)
-    win32api.GetAsyncKeyState(win32con.VK_ESCAPE)
-    while True:
-        if win32api.GetAsyncKeyState(CAPTURE_HOTKEY_VK) & 0x8000:
-            return True
-        if win32api.GetAsyncKeyState(win32con.VK_ESCAPE) & 0x8000:
-            return False
-        time.sleep(0.05)
+    for remaining in range(seconds, 0, -1):
+        print(f"\r   {remaining} 秒后定格整屏，请立刻切到目标界面并把列表展开...  ",
+              end="", flush=True)
+        time.sleep(1)
+    print("\r   正在定格整屏..." + " " * 40)
+    return pyautogui.screenshot()
 
 
 class ImageRegionSelector:
@@ -154,28 +155,17 @@ class ImageRegionSelector:
         self.root.quit()
         self.root.destroy()
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, BASE_DIR)
-
-CONFIG_PATH = os.path.join(BASE_DIR, "config.yaml")
-RES_DIR = os.path.join(BASE_DIR, "res")
-
-# 角色名只允许蛇形命名，和config.yaml里已有的角色保持一致，同时保证能直接拼进图片文件名
-ROLE_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
-
 
 def capture_region_to_file(hint, save_path):
     """引导用户定格截屏并框选一块区域保存为png，成功返回True。
 
-    两步走：先等全局热键定格整屏（此时本程序不抢焦点，目标界面展开的下拉列表不会收起），
+    两步走：先倒计时定格整屏（倒计时期间本程序不抢焦点，用户可以从容展开下拉列表），
     再在定格图上框选并直接裁剪——不需要二次截屏，所见即所得。
     """
     print(f"   {hint}")
-    print(f"   调好界面后按 {CAPTURE_HOTKEY_NAME} 定格整屏（按 Esc 取消本次截取）...")
-    if not wait_for_capture_hotkey():
-        return False
-
-    screen = pyautogui.screenshot()
+    print(f"   按回车开始 {CAPTURE_COUNTDOWN_SEC} 秒倒计时，倒计时期间把目标界面调好即可")
+    input("   准备好了就按回车（此时还不用切窗口）...")
+    screen = countdown_then_grab(CAPTURE_COUNTDOWN_SEC)
     print(f"   已定格整屏（{screen.width}x{screen.height}），请在弹出的画面上框选目标区域")
     box = ImageRegionSelector(screen).select(hint)
     if not box:
@@ -226,9 +216,9 @@ def ask_role_name(existing_names):
 def capture_with_retry(hint, save_path, what):
     """定格截屏+框选保存一张图，保存后让用户确认，不满意可以重拍；确认放弃则返回False。
 
-    这里刻意不在截图前用input()等回车：回终端按回车会让目标窗口失去焦点，
-    荼蘼的方案下拉列表、游戏的角色下拉列表都会因此收起，导致截不到想要的内容。
-    截完之后再回终端确认就没有这个问题了，那时画面已经定格保存下来了。
+    截图前的那次回车只是"开始倒计时"，发生在用户去展开下拉列表之前，所以不影响；
+    真正定格的那一刻本程序不需要焦点，列表不会被收起。
+    截完之后再回终端确认也没问题，那时画面已经定格保存下来了。
 
     图片是一张张即时落盘的，而配置要走完全部步骤才写回config.yaml，所以中途退出再重来时，
     之前截好的图还在。这里先问一句是否直接复用，避免每次都得从头重截。
