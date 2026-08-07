@@ -70,7 +70,7 @@ roles:
   - name: "an_an"
     login_role_image: "res/an_role_login.png"     # 登录页面角色选择图片
     script_image: "res/an_script_item.png"        # 角色要挂的脚本图片
-    enable: false
+    enable: true
 
 # 全局配置
 global_settings:
@@ -135,3 +135,35 @@ global_settings:
 
   regions:
     tray: (3269, 2068, 555, 80)
+
+# 队列相关配置（脚本运行队列功能）
+queue_settings:
+  max_concurrent: 6          # 同时运行角色数（并发槽位，即"运行队列最大容量"）
+  pending_timeout_sec: 1800  # 待运行状态超时时间（30分钟），超时判定为失败
+  max_retries: 3             # 自动重试次数上限，超过后标记为失败/待处理，需人工介入
+
+# 荼蘼状态监控相关配置
+monitor_settings:
+  screenshot_interval_sec: 300  # 荼蘼状态截图轮询间隔（默认5分钟）
+  max_visible_rows: 10           # 荼蘼面板可见的角色行数，需按实际界面校准
+  row:
+    top_y: 100                  # 第一行最上边缘的绝对y坐标（已标定）
+    height: 40                  # 单行实际高度（已标定）
+    content_left_x: 260         # 每行内容区左边缘（导航按钮右侧那条线）相对窗口最左边缘的x偏移（已标定）
+    status_color_point:         # 用于取色判断行是否"运行中(绿)"的坐标（相对内容区左边缘+行最上边缘的偏移）
+      x: 49
+      y: 15
+    status_text_region:         # 用于识别荼蘼原始状态文字的区域（相对内容区左边缘+行最上边缘的偏移：x1,y1,x2,y2）
+      x1: 400
+      y1: 0
+      x2: 560
+      y2: 40
+  status_templates:             # 荼蘼各原始状态对应的文字模板图片，需实际截取后才能生效
+    未启动: "res/tu_mi_status_not_started.png"
+    初始化: "res/tu_mi_status_initializing.png"
+
+# 队列运行数据存储相关配置
+storage_settings:
+  state_dir: "state"            # 每日状态JSON文件存放目录
+  screenshot_dir: "screenshots" # 每轮监控截图存放目录
+  retention_days: 30            # 数据保留天数，超过自动清理

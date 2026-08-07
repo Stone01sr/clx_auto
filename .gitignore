@@ -7,3 +7,7 @@ __pycache__
 clx_auto.md
 
 CONTEXT.md
+
+# 队列运行时数据（每日状态JSON与荼蘼截图留档）
+/state/
+/screenshots/

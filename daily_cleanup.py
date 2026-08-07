@@ -16,6 +16,11 @@ import yaml
 import logging
 from pywinauto import Application, findwindows
 
+from tu_mi_queue.models import QueueState, TaskStatus
+from tu_mi_queue.state_store import StateStore
+from tu_mi_queue.monitor import TuMiMonitor
+from tu_mi_queue.scheduler import Scheduler
+
 logger = logging.getLogger(__name__)
 today = datetime.datetime.now()
 logging.basicConfig(
@@ -24,7 +29,7 @@ logging.basicConfig(
     datefmt='%H:%M:%S',
     handlers=[
         logging.StreamHandler(sys.stdout),  # 输出到控制台
-        logging.FileHandler(f"app_{today:%Y-%m-%d}.log")      # 输出到文件
+        logging.FileHandler(f"app_{today:%Y-%m-%d}.log", encoding="utf-8")      # 输出到文件
     ]
 )
 
@@ -37,7 +42,7 @@ def open_software(software_path):
         subprocess.Popen(software_path)
         logger.info("正在启动软件: %s", software_path)
     except Exception as e:
-        logger.error("启动软件失败", e)
+        logger.error("启动软件失败: %s", e)
 
 
 
@@ -151,6 +156,26 @@ def dismiss_timezone_warning(timeout=15, interval=1):
         time.sleep(interval)
     return False
 
+def dismiss_tu_mi_error_popup():
+    """游戏客户端异常退出时，荼蘼会弹出"<错误> 插件版本:xxx"的模态错误框（提示"创建DISPLAY失败
+    <错误信息 = 无效的窗口句柄。>"），弹出后整个荼蘼变得不可操作，必须先点掉"确定"才能恢复。
+    单次检查、不等待——由调用方（监控轮询/扫描空闲行前）按自己的节奏重复调用；
+    一次性点掉所有匹配的错误框，避免多个角色同时异常退出时堆叠了多个弹窗。"""
+    windows = findwindows.find_elements(title_re=".*错误.*插件版本.*", backend="uia")
+    if not windows:
+        return False
+    dismissed = False
+    for w in windows:
+        try:
+            app = Application(backend="uia").connect(handle=w.handle)
+            dlg = app.window(handle=w.handle)
+            dlg.child_window(title="确定", control_type="Button").click()
+            dismissed = True
+        except Exception as e:
+            logger.warning("点击荼蘼异常退出错误弹窗\"确定\"按钮失败: %s", e)
+    return dismissed
+
+
 def ensure_script_software_open():
     """如果荼蘼未运行，则自动打开；返回荼蘼进程pid（找不到则返回None）"""
     tu_mi_pid = find_pid_by_keyword("荼蘼")
@@ -171,15 +196,7 @@ def ensure_script_software_open():
         # 部分电脑系统时区不是"中国北京"时，荼蘼启动过程中会弹出警告框；
         # 按需求点击"否"继续启动软件，不修改系统时区
         dismiss_timezone_warning(timeout=15)
-    # 新启动/已在运行的荼蘼窗口不一定在最前面，可能被终端/IDE等其他窗口挡住，
-    # 此时基于截图的图像识别永远找不到tu_mi_logo，表现为“启动了但没有窗口出现”；
-    # 按pid强制置前，绕过前台锁定限制
-    bring_window_to_front_by_pid(tu_mi_pid, timeout=config["global_settings"]["software_init_delay"])
-    # 首次启动可能弹出初始化按钮，尝试点击，找不到则跳过，不影响后续流程
-    try:
-        wait_image_and_click(config["global_settings"]["images"]['tu_mi_initialize'], max_retries=3)
-    except Exception:
-        logger.info("未检测到荼蘼初始化按钮，跳过")
+        bring_window_to_front_by_pid(tu_mi_pid, timeout=config["global_settings"]["software_init_delay"])
     return tu_mi_pid
 
 def open_script_window():
@@ -350,6 +367,89 @@ def open_clx_and_login(role):
     time.sleep(5)
 
 
+def find_tu_mi_hwnd():
+    """定位当前唯一一个荼蘼实例的窗口hwnd，找不到返回None"""
+    pid = find_pid_by_keyword("荼蘼")
+    if not pid:
+        return None
+    return find_visible_hwnd_by_pid(pid, timeout=5)
+
+
+def snapshot_clx_window_handles():
+    """获取当前所有"一梦江湖"窗口的handle集合。一梦江湖的可执行文件是Launcher.exe，
+    路径里不含中文关键字，没法像荼蘼那样按exe路径关键字找pid，只能按窗口标题识别；
+    队列并发时会同时存在多个"一梦江湖"窗口，登录新角色前先记一次快照，登录后做diff
+    才能准确定位"这次新开的是哪一个"，而不是随便抓一个已存在的同名窗口。"""
+    windows = findwindows.find_elements(title_re=".*一梦江湖.*", backend="uia")
+    return {w.handle for w in windows}
+
+
+def wait_for_new_clx_window(existing_handles, timeout=30, interval=1):
+    """轮询等待出现一个不在existing_handles中的新"一梦江湖"窗口，返回其pid；超时返回None"""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        windows = findwindows.find_elements(title_re=".*一梦江湖.*", backend="uia")
+        for w in windows:
+            if w.handle not in existing_handles:
+                _, pid = win32process.GetWindowThreadProcessId(w.handle)
+                return pid
+        time.sleep(interval)
+    return None
+
+
+def setup_role_for_queue(role, row_index):
+    """队列模式下单个角色的完整setup流程：登录、选角色、进入游戏、在荼蘼第row_index行
+    注册脚本并点击开始。返回新打开的游戏客户端pid，供失败时精确关闭该窗口用。"""
+    points = config["global_settings"]["points"]
+    images = config["global_settings"]["images"]
+
+    existing_handles = snapshot_clx_window_handles()
+    open_clx_and_login(role)
+    window_pid = wait_for_new_clx_window(existing_handles, timeout=30)
+    if not window_pid:
+        logger.warning("未能捕获角色 %s 新打开的游戏客户端pid，失败时可能无法精确关闭该窗口", role['name'])
+
+    # 点开角色选择下拉框
+    pyautogui.click(points["select_role"]["x"], points["select_role"]["y"])
+    logger.info('已点击角色选择，即将点击角色图片')
+    wait_image_and_click(role['login_role_image'], max_retries=5)
+    time.sleep(10)
+    # 先确定当前要进入经典服还是梦境服：如找到"梦境私服"标记，点击勾选框取消选中
+    try:
+        pyautogui.locateCenterOnScreen(images['dream_server'], confidence=0.8)
+        logger.info("角色：%s检测到已选中梦境服，即将取消选中...", role['name'])
+        wait_image_and_click(images['dream_checkbox'], max_retries=1)
+    except pyautogui.ImageNotFoundException:
+        logger.info("角色：%s未选中梦境服，即将踏入经典服", role['name'])
+    wait_image_and_click(images['role_enter_game'], max_retries=5)
+    time.sleep(5)
+
+    # 在荼蘼里把脚本注册到分配好的行（row_index），不再假设按顺序追加
+    pyautogui.click(points['script_refresh']['x'], points['script_refresh']['y'])
+    row_height = config["monitor_settings"]["row"]["height"]
+    interval = row_index * row_height
+    x = points['script_choose_base']['x']
+    y = points['script_choose_base']['y'] + interval
+    # 先点击当前方案，再下拉列表，防止目前已选中要查找的方案，导致背景颜色不对找不到
+    pyautogui.click(x, y)
+    pyautogui.click(x, y + 30)
+    pyautogui.click(x, y)
+    logger.info("已点击脚本的下拉列表，x：%d，y：%d", x, y)
+    time.sleep(3)
+    y = points['script_choose_base']['y'] + interval
+    logger.info("即将在(0, %d, 1500, 1200)区域中寻找要运行的脚本", y)
+    script_pos = pyautogui.locateCenterOnScreen(role['script_image'], region=(0, y, 1500, 1200),
+                                                 grayscale=True, confidence=0.8)
+    pyautogui.click(script_pos)
+    logger.info("已找到角色要运行的脚本: %s并点击", role['script_image'])
+    x = points['script_run_base']['x']
+    y = points['script_run_base']['y'] + interval
+    pyautogui.click(x, y)
+    logger.info("于 x=%d，y=%d 处点击运行脚本", x, y)
+
+    return window_pid
+
+
 def close_window_with_pywinauto(title, index):
     try:
         # 查找所有匹配的窗口
@@ -412,68 +512,34 @@ def main():
     open_script_window()
     # 确保当前没有打开的糊糊窗口
     close_clx_windows_and_wait()
-    
-    role_index = 0
-    succeed = 0
-    points = config["global_settings"]["points"]
+
     all_roles = get_roles()
-    init_length = len(all_roles)
-    while role_index < len(all_roles) and role_index < init_length * 2:
-        role = all_roles[role_index]
-        role_index += 1
-        logger.info("开始挂： %s 的脚本", role["name"])
-        try:
-            open_clx_and_login(role)
-            # 点开选择角色
-            # 点开账号选择下拉框
-            pyautogui.click(points["select_role"]["x"], points["select_role"]["y"])
-            # select_account_pos = pyautogui.locateCenterOnScreen(config["global_settings"]["images"]['role_selection'],
-            #                         region=(1740, 1200, 1850, 1280), grayscale=True, confidence=0.60)
-            # pyautogui.click(select_account_pos)
-            logger.info('已点击角色选择，即将点击角色图片')
-            # 提前截取好角色的图片，保存为 'stone_role_login.png'
-            wait_image_and_click(role['login_role_image'], max_retries=5)
-            time.sleep(10)
-            # 先确定当前要进入经典服还是梦境服：在屏幕上指定区域(2200, 700, 2600, 1270)查找“梦境私服”，如找到，点击勾选框
-            try:
-                pyautogui.locateCenterOnScreen(config["global_settings"]["images"]['dream_server'], confidence=0.8)
-                logger.info("角色：%s检测到已选中梦境服，即将取消选中...", role['name'])
-                wait_image_and_click(config["global_settings"]["images"]['dream_checkbox'], max_retries=1)
-            except pyautogui.ImageNotFoundException:
-                logger.info("角色：%s未选中梦境服，即将踏入经典服", role['name'])
-            # 点击踏入江湖
-            wait_image_and_click(config["global_settings"]["images"]['role_enter_game'], max_retries=5)
-            time.sleep(5)
-            # 脚本刷新
-            pyautogui.click(points['script_refresh']['x'], points['script_refresh']['y'])
-            # 脚本方案下拉列表
-            interval = succeed * config['global_settings']['script_item_interval']
-            x = points['script_choose_base']['x']
-            y = points['script_choose_base']['y'] + interval
-            pyautogui.click(x, y)
-            # 先点击当前方案，再下拉列表，防止目前已选中要查找的方案，导致背景颜色不对找不到
-            pyautogui.click(x, y + 30)
-            pyautogui.click(x, y)
-            logger.info("已点击脚本的下拉列表，x：%d，y：%d", x, y)
-            time.sleep(3)
-            y = points['script_choose_base']['y'] + interval
-            logger.info("即将在(0, %d, 1500, 1200)区域中寻找要运行的脚本", y)
-            account_field_pos = pyautogui.locateCenterOnScreen(role['script_image'],
-                                                               region=(0, y, 1500, 1200),
-                                                               grayscale=True, confidence=0.8)
-            pyautogui.click(account_field_pos)
-            logger.info("已找到角色要运行的脚本: %s并点击", role['script_image'])
-            # 开始
-            x = points['script_run_base']['x']
-            y = points['script_run_base']['y'] + interval
-            pyautogui.click(x, y)
-            logger.info("于 x=%d，y=%d 处点击运行脚本", x, y)
-            succeed += 1
-        except Exception as e:
-            # close_top_clx_window()
-            # all_roles.append(role)
-            logger.error("role: %s run error", role['name'], exc_info=True)
-            logger.error(e)
+    role_lookup = {role["name"]: role for role in all_roles}
+    role_names = [role["name"] for role in all_roles]
+
+    queue_state = QueueState(role_names, config["queue_settings"]["max_concurrent"])
+    state_store = StateStore(config["storage_settings"])
+    state_store.cleanup_old_data()
+    state_store.save(datetime.date.today(), queue_state.snapshot())
+
+    monitor = TuMiMonitor(config, queue_state, state_store, find_tu_mi_hwnd, kill_process_tree,
+                           dismiss_error_popup_fn=dismiss_tu_mi_error_popup)
+    monitor.start()
+
+    scheduler = Scheduler(config, queue_state, role_lookup, setup_role_for_queue,
+                           find_tu_mi_hwnd, kill_process_tree,
+                           dismiss_error_popup_fn=dismiss_tu_mi_error_popup)
+    try:
+        scheduler.run_until_all_finished()
+    finally:
+        monitor.stop()
+        state_store.save(datetime.date.today(), queue_state.snapshot())
+
+    tasks = queue_state.snapshot()
+    done = [t for t in tasks if t.status == TaskStatus.DONE.value]
+    failed = [t for t in tasks if t.status == TaskStatus.FAILED.value]
+    logger.info("当天队列运行结束：完成%d个，失败%d个（失败角色：%s）",
+                len(done), len(failed), [t.role_name for t in failed])
 
 
 if __name__ == "__main__":
