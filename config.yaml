@@ -70,6 +70,7 @@ roles:
   - name: "an_an"
     login_role_image: "res/an_role_login.png"     # 登录页面角色选择图片
     script_image: "res/an_script_item.png"        # 角色要挂的脚本图片
+    channel_account: true                          # 渠道服账号，需借助idv-login辅助登录，不能直接登录
     enable: true
 
 # 全局配置

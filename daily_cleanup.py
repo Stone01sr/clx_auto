@@ -308,8 +308,9 @@ def wait_image_and_click(image_path, region=None, max_retries = 200):
 
 def open_clx_and_login(role):
     idv_pid = None
-    # 桉桉不是官服，不能直接登录，要借助外部脚本idv
-    if role['name'] == "an_an":
+    is_channel_account = role.get('channel_account', False)
+    # 渠道服账号不是官服，不能直接登录，要借助外部脚本idv
+    if is_channel_account:
         run_as_admin_powershell(config["global_settings"]["idv_login_path"], '--open-ui')
         idv_pid = wait_for_process_by_keyword("idv-login", timeout=30)
         if idv_pid:
@@ -322,7 +323,7 @@ def open_clx_and_login(role):
     logger.info("糊糊已打开...")
     # 朕知道了
     wait_image_and_click(config["global_settings"]["images"]['init_known'])
-    if role['name'] == "an_an":
+    if is_channel_account:
         wait_image_and_click(config["global_settings"]["images"]['other_account'], max_retries=10)
         wait_image_and_click(config["global_settings"]["images"]['logo'], max_retries=10)
         time.sleep(3)
@@ -334,7 +335,7 @@ def open_clx_and_login(role):
         if len(an_login_windows) > 0:
             an_login_windows[0].minimize()
         time.sleep(10)
-        # 桉桉登录完成，关闭idv-login，其他角色不依赖该进程，不受影响
+        # 渠道服账号登录完成，关闭idv-login，官服账号不依赖该进程，不受影响
         if idv_pid:
             kill_process_tree(idv_pid)
     else:
