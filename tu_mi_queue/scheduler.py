@@ -14,7 +14,8 @@ class Scheduler:
     该角色就交给荼蘼后台挂机，不再占用自动化资源，真正的"并发"体现在荼蘼里同时挂着几个角色。"""
 
     def __init__(self, config, queue_state, role_lookup, setup_role_fn,
-                 find_tu_mi_hwnd_fn, close_window_fn, dismiss_error_popup_fn=None):
+                 find_tu_mi_hwnd_fn, close_window_fn, dismiss_error_popup_fn=None,
+                 bring_tu_mi_to_front_fn=None):
         monitor_cfg = config["monitor_settings"]
         queue_cfg = config["queue_settings"]
         self.queue_state = queue_state
@@ -22,6 +23,9 @@ class Scheduler:
         self.setup_role_fn = setup_role_fn         # (role, row_index) -> window_pid
         self.find_tu_mi_hwnd_fn = find_tu_mi_hwnd_fn
         self.close_window_fn = close_window_fn
+        # 扫描空闲行是靠截荼蘼窗口那块屏幕区域，上一个角色的游戏窗口盖在上面的话截到的就是游戏画面，
+        # 行状态全读错。扫描前先把荼蘼置前，不传则跳过（保持向后兼容）
+        self.bring_tu_mi_to_front_fn = bring_tu_mi_to_front_fn
         # 荼蘼弹出异常退出错误框时会挡住整个面板、可能干扰空闲行扫描，扫描前先点掉它
         self.dismiss_error_popup_fn = dismiss_error_popup_fn
         self.idle_poll_interval = queue_cfg["idle_poll_interval_sec"]
@@ -83,6 +87,11 @@ class Scheduler:
             self._handle_setup_failure(task)
 
     def _find_empty_row(self):
+        if self.bring_tu_mi_to_front_fn:
+            try:
+                self.bring_tu_mi_to_front_fn()
+            except Exception:
+                logger.exception("扫描空闲行前置前荼蘼窗口失败，本轮扫描可能被其他窗口遮挡")
         hwnd = self.find_tu_mi_hwnd_fn()
         if not hwnd:
             logger.warning("未找到荼蘼窗口，无法扫描空闲行")
@@ -106,7 +115,11 @@ class Scheduler:
 
     def _handle_setup_failure(self, task):
         """setup过程本身抛异常（比如图片一直识别不到），按失败处理：关窗口+计入重试次数，
-        逻辑和monitor里30分钟超时失败的处理保持一致（重试<=3次回等待队列队尾，超过则终态失败）。"""
+        逻辑和monitor里30分钟超时失败的处理保持一致（重试<=3次回等待队列队尾，超过则终态失败）。
+
+        本次setup新开的游戏窗口由setup_role_fn自己在抛异常前清理（它才知道这一次开了哪些窗口，
+        失败点在拿到window_pid之前时也能兜住）；这里再按window_pid关一次，兜住那些
+        setup成功后才被判失败、window_pid已记录在案的任务。"""
         if task.window_pid and self.close_window_fn:
             try:
                 self.close_window_fn(task.window_pid)

@@ -5,43 +5,43 @@ roles:
     account_image: "res/stone_account.png"           # 账号图片
     login_role_image: "res/stone_role_login.png"     # 登录页面角色选择图片
     script_image: "res/stone_script_item.png"        # 角色要挂的脚本图片
-    enable: true
+    enable: false
 
   - name: "guang"
     account_image: "res/guang_account.png"          # 账号图片
     login_role_image: "res/guang_role_login.png"    # 登录页面角色选择图片
     script_image: "res/stone_script_item.png"       # 角色要挂的脚本图片
-    enable: true
+    enable: false
 
   - name: "qi"
     account_image: "res/qi_account.png"
     login_role_image: "res/qi_role_login.png"
     script_image: "res/guang_script_item.png"
-    enable: true
+    enable: false
 
   - name: "lao_mo"
     account_image: "res/lao_mo_account.png"
     login_role_image: "res/lao_mo_role_login.png"
     script_image: "res/lao_mo_script_item.png"
-    enable: true
+    enable: false
 
   - name: "tu_dou"
     account_image: "res/tu_dou_account.png"
     login_role_image: "res/tu_dou_role_login.png"
     script_image: "res/guang_script_item.png"
-    enable: true
+    enable: false
 
   - name: "zhan_ye"
     account_image: "res/zhan_ye_account.png"
     login_role_image: "res/zhan_ye_role_login.png"
     script_image: "res/zhan_ye_script_item.png"
-    enable: true
+    enable: false
 
   - name: "lu"
     account_image: "res/lu_account.png"
     login_role_image: "res/lu_role_login.png"
     script_image: "res/guang_script_item.png"
-    enable: true
+    enable: false
 
   - name: "hao_wen"
     account_image: "res/hao_wen_account.png"

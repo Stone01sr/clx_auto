@@ -57,12 +57,15 @@ def region_of(name, top=None):
     return (r["left"], r["top"] if top is None else top, r["width"], r["height"])
 
 def open_software(software_path):
-    """使用指定路径打开软件"""
+    """使用指定路径打开软件，返回被启动进程的pid（启动失败返回None）。
+    pid用于setup失败时的兜底清理：窗口还没建出来就失败的话，只能靠它把进程收掉"""
     try:
-        subprocess.Popen(software_path)
-        logger.info("正在启动软件: %s", software_path)
+        proc = subprocess.Popen(software_path)
+        logger.info("正在启动软件: %s（pid=%s）", software_path, proc.pid)
+        return proc.pid
     except Exception as e:
         logger.error("启动软件失败: %s", e)
+        return None
 
 
 
@@ -289,7 +292,8 @@ def minimize_window_by_pid(pid, timeout=TIMEOUTS["find_window"], interval=TIMEOU
     return False
 
 def kill_process_tree(pid):
-    """终止指定pid及其所有子进程（idv-login可能会派生子进程，如渠道服账号管理窗口）"""
+    """终止指定pid及其所有子进程（idv-login可能会派生子进程，如渠道服账号管理窗口；
+    游戏启动器也可能把真正的客户端拉起为子进程）。既用于关idv-login，也用作队列里的关窗口手段"""
     try:
         parent = psutil.Process(pid)
         children = parent.children(recursive=True)
@@ -301,11 +305,11 @@ def kill_process_tree(pid):
         psutil.wait_procs(children, timeout=TIMEOUTS["kill_process"])
         parent.terminate()
         parent.wait(timeout=TIMEOUTS["kill_process"])
-        logger.info("已关闭idv-login进程（pid=%s）及其子进程", pid)
+        logger.info("已关闭进程（pid=%s）及其子进程", pid)
     except psutil.NoSuchProcess:
-        logger.info("idv-login进程（pid=%s）已不存在，无需关闭", pid)
+        logger.info("进程（pid=%s）已不存在，无需关闭", pid)
     except Exception as e:
-        logger.error("关闭idv-login进程时发生错误: %s", e)
+        logger.error("关闭进程（pid=%s）时发生错误: %s", pid, e)
 
 def wait_image_and_click(image_path, region=None, max_retries=MATCH["default_max_retries"]):
     find_flag = False
@@ -372,19 +376,45 @@ def wait_image_and_click_in_scrollable_list(image_path, scroll_cfg, confidence=M
     raise Exception(f"在列表中滚动查找{max_rounds}轮仍未找到图片: {image_path}")
 
 
-def open_clx_and_login(role):
-    idv_pid = None
+class RoleLaunchContext:
+    """记录一次角色setup过程中"我们启动了什么"，失败时据此把这一次开出来的东西全部收干净。
+    必须一边启动一边记、而不是等流程跑完再统一收集：失败点可以出现在任何一步（多数是某张
+    图片一直识别不到），早期失败时window_pid还没拿到，光靠它清理会漏掉已经打开的
+    "一梦江湖"窗口，于是每重试一次就多留一个窗口，最后堆出一屏幕。"""
+
+    def __init__(self):
+        self.existing_clx_windows = snapshot_clx_windows()  # setup开始前就存在的游戏窗口，不能碰
+        self.launcher_pid = None    # 我们拉起的Launcher.exe进程
+        self.idv_pid = None         # 渠道服账号登录用的idv-login进程
+        self.window_pid = None      # 本次新开的游戏客户端窗口所属进程
+
+    def cleanup(self, role_name):
+        """关掉本次setup新开的游戏窗口和辅助进程，让重试从干净的状态重新开始"""
+        closed = close_new_clx_windows(self.existing_clx_windows)
+        logger.info("角色 %s setup失败清理：关闭了%d个本次新打开的一梦江湖窗口", role_name, closed)
+        # 窗口一个都没关到，说明失败得很早（客户端窗口还没建出来、或标题还不是"一梦江湖"），
+        # 这时按启动器pid兜底，避免留下一个看不见的客户端进程占着账号
+        if closed == 0 and self.launcher_pid:
+            logger.info("角色 %s 未匹配到新的一梦江湖窗口，改按启动器进程清理（pid=%s）",
+                        role_name, self.launcher_pid)
+            kill_process_tree(self.launcher_pid)
+        if self.idv_pid:
+            logger.info("角色 %s setup失败清理：关闭残留的idv-login进程（pid=%s）", role_name, self.idv_pid)
+            kill_process_tree(self.idv_pid)
+
+
+def open_clx_and_login(role, ctx):
     is_channel_account = role.get('channel_account', False)
     # 渠道服账号不是官服，不能直接登录，要借助外部脚本idv
     if is_channel_account:
         run_as_admin_powershell(G["idv_login_path"], '--open-ui')
-        idv_pid = wait_for_process_by_keyword(PROC["idv_login"])
-        if idv_pid:
-            minimize_window_by_pid(idv_pid)
+        ctx.idv_pid = wait_for_process_by_keyword(PROC["idv_login"])
+        if ctx.idv_pid:
+            minimize_window_by_pid(ctx.idv_pid)
         else:
             logger.warning("等待超时，未检测到idv-login进程，继续后续流程")
     # 打开一梦江湖
-    open_software(G["software_path"])
+    ctx.launcher_pid = open_software(G["software_path"])
     time.sleep(DELAYS["after_game_launch"])
     logger.info("糊糊已打开...")
     # 朕知道了
@@ -403,8 +433,9 @@ def open_clx_and_login(role):
             an_login_windows[0].minimize()
         time.sleep(DELAYS["after_channel_login"])
         # 渠道服账号登录完成，关闭idv-login，官服账号不依赖该进程，不受影响
-        if idv_pid:
-            kill_process_tree(idv_pid)
+        if ctx.idv_pid:
+            kill_process_tree(ctx.idv_pid)
+            ctx.idv_pid = None  # 已主动关掉，失败清理时不用再关一次
     else:
         # 在账号下拉列表所在范围内找那个倒三角，范围缩小既能提速也避免匹配到屏幕别处
         wait_image_and_click(IMAGES['account_selection'],
@@ -437,6 +468,21 @@ def open_clx_and_login(role):
     time.sleep(DELAYS["after_login"])
 
 
+def bring_tu_mi_to_front():
+    """把荼蘼窗口移回左上角并强制置于最前，返回是否成功。
+    角色点完"进入游戏"后前台是游戏客户端，会把荼蘼整个盖住；此时再按固定坐标去点
+    荼蘼的刷新按钮/方案下拉框，点到的其实是游戏窗口，后面自然就找不到脚本图片了。
+    所以每次操作荼蘼之前都先置前一次（顺带把窗口拉回(0,0)，坐标是按这个位置标定的）。"""
+    pid = find_pid_by_keyword(PROC["tu_mi"])
+    if not pid:
+        logger.warning("未找到荼蘼进程，无法在操作前置前荼蘼窗口")
+        return False
+    ok = bring_window_to_front_by_pid(pid, timeout=TIMEOUTS["tu_mi_front"])
+    if not ok:
+        logger.warning("操作荼蘼前置前窗口失败（pid=%s），后续点击可能落到别的窗口上", pid)
+    return ok
+
+
 def find_tu_mi_hwnd():
     """定位当前唯一一个荼蘼实例的窗口hwnd，找不到返回None"""
     pid = find_pid_by_keyword(PROC["tu_mi"])
@@ -445,22 +491,52 @@ def find_tu_mi_hwnd():
     return find_visible_hwnd_by_pid(pid, timeout=TIMEOUTS["find_tu_mi_window"])
 
 
-def snapshot_clx_window_handles():
-    """获取当前所有"一梦江湖"窗口的handle集合。一梦江湖的可执行文件是Launcher.exe，
+def snapshot_clx_windows():
+    """获取当前所有"一梦江湖"窗口的 {handle: pid}。一梦江湖的可执行文件是Launcher.exe，
     路径里不含中文关键字，没法像荼蘼那样按exe路径关键字找pid，只能按窗口标题识别；
     队列并发时会同时存在多个"一梦江湖"窗口，登录新角色前先记一次快照，登录后做diff
-    才能准确定位"这次新开的是哪一个"，而不是随便抓一个已存在的同名窗口。"""
+    才能准确定位"这次新开的是哪一个"，而不是随便抓一个已存在的同名窗口。
+    连pid一起记，是为了清理时能认出"新窗口其实属于一个老进程"（见close_new_clx_windows）。"""
     windows = findwindows.find_elements(title_re=f'.*{TITLES["clx"]}.*', backend="uia")
-    return {w.handle for w in windows}
+    snapshot = {}
+    for w in windows:
+        try:
+            _, pid = win32process.GetWindowThreadProcessId(w.handle)
+        except Exception:
+            pid = None
+        snapshot[w.handle] = pid
+    return snapshot
 
 
-def wait_for_new_clx_window(existing_handles, timeout=TIMEOUTS["new_game_window"], interval=TIMEOUTS["poll_interval"]):
-    """轮询等待出现一个不在existing_handles中的新"一梦江湖"窗口，返回其pid；超时返回None"""
+def close_new_clx_windows(existing_windows):
+    """关闭快照（snapshot_clx_windows的结果）之后新出现的"一梦江湖"窗口，返回关闭的窗口数。
+    只关新handle，并跳过pid已经出现在快照里的窗口——并发挂机中的其他角色如果弹出新的同名窗口，
+    它属于老进程，一旦误杀就把人家正在跑的客户端一起干掉了。"""
+    existing_pids = {pid for pid in existing_windows.values() if pid}
+    closed = 0
+    for handle, pid in snapshot_clx_windows().items():
+        if handle in existing_windows:
+            continue
+        if pid and pid in existing_pids:
+            logger.info("一梦江湖窗口(handle=%s)属于本次之前就在运行的客户端(pid=%s)，跳过关闭", handle, pid)
+            continue
+        try:
+            Application(backend="uia").connect(handle=handle).kill()
+            closed += 1
+            logger.info("已关闭本次新打开的一梦江湖窗口（handle=%s, pid=%s）", handle, pid)
+        except Exception as e:
+            logger.error("关闭一梦江湖窗口失败（handle=%s, pid=%s）: %s", handle, pid, e)
+    return closed
+
+
+def wait_for_new_clx_window(existing_windows, timeout=TIMEOUTS["new_game_window"], interval=TIMEOUTS["poll_interval"]):
+    """轮询等待出现一个handle不在existing_windows（snapshot_clx_windows的结果）里的新
+    "一梦江湖"窗口，返回其pid；超时返回None"""
     deadline = time.time() + timeout
     while time.time() < deadline:
         windows = findwindows.find_elements(title_re=f'.*{TITLES["clx"]}.*', backend="uia")
         for w in windows:
-            if w.handle not in existing_handles:
+            if w.handle not in existing_windows:
                 _, pid = win32process.GetWindowThreadProcessId(w.handle)
                 return pid
         time.sleep(interval)
@@ -469,13 +545,31 @@ def wait_for_new_clx_window(existing_handles, timeout=TIMEOUTS["new_game_window"
 
 def setup_role_for_queue(role, row_index):
     """队列模式下单个角色的完整setup流程：登录、选角色、进入游戏、在荼蘼第row_index行
-    注册脚本并点击开始。返回新打开的游戏客户端pid，供失败时精确关闭该窗口用。"""
+    注册脚本并点击开始。返回新打开的游戏客户端pid，供后续超时/异常退出时精确关闭该窗口用。
+
+    流程中任何一步失败（登录界面的图片识别不到、荼蘼里选不到脚本等），都要先把这一次
+    新开出来的游戏窗口和辅助进程清理掉再把异常抛给调度器：调度器会把角色重新排队重试，
+    残留的窗口不关掉，重试几轮就会堆出一屏幕"一梦江湖"，既占内存也会干扰后续图像识别。"""
+    ctx = RoleLaunchContext()
+    try:
+        return _setup_role_steps(role, row_index, ctx)
+    except Exception:
+        logger.warning("角色 %s 的setup流程失败，开始清理本次新打开的窗口/进程", role['name'])
+        try:
+            ctx.cleanup(role['name'])
+        except Exception:
+            logger.exception("角色 %s setup失败后的清理过程本身出错，可能仍有窗口残留", role['name'])
+        raise
+
+
+def _setup_role_steps(role, row_index, ctx):
+    """setup的具体步骤，启动了什么都记到ctx里，失败清理由setup_role_for_queue统一负责"""
     points = POINTS
     images = IMAGES
 
-    existing_handles = snapshot_clx_window_handles()
-    open_clx_and_login(role)
-    window_pid = wait_for_new_clx_window(existing_handles)
+    open_clx_and_login(role, ctx)
+    window_pid = wait_for_new_clx_window(ctx.existing_clx_windows)
+    ctx.window_pid = window_pid
     if not window_pid:
         logger.warning("未能捕获角色 %s 新打开的游戏客户端pid，失败时可能无法精确关闭该窗口", role['name'])
 
@@ -494,6 +588,11 @@ def setup_role_for_queue(role, row_index):
         logger.info("角色：%s未选中梦境服，即将踏入经典服", role['name'])
     wait_image_and_click(images['role_enter_game'], max_retries=RETRIES["role_enter_game"])
     time.sleep(DELAYS["after_enter_game"])
+
+    # 登录流程结束、要开始操作荼蘼了：先把荼蘼从游戏窗口后面拉到最前，否则下面这些
+    # 按坐标的点击会全部落到盖在上面的游戏客户端上
+    bring_tu_mi_to_front()
+    time.sleep(DELAYS["after_page_switch"])
 
     # 在荼蘼里把脚本注册到分配好的行（row_index），不再假设按顺序追加。
     # 刷新按钮用图像识别定位而不是固定坐标：荼蘼窗口被移动或改变大小时坐标就会失效，
@@ -601,7 +700,8 @@ def main():
 
     scheduler = Scheduler(config, queue_state, role_lookup, setup_role_for_queue,
                            find_tu_mi_hwnd, kill_process_tree,
-                           dismiss_error_popup_fn=dismiss_tu_mi_error_popup)
+                           dismiss_error_popup_fn=dismiss_tu_mi_error_popup,
+                           bring_tu_mi_to_front_fn=bring_tu_mi_to_front)
     try:
         scheduler.run_until_all_finished()
     finally:
