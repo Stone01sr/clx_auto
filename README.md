@@ -578,7 +578,12 @@ queue_settings:
 
 ### 找不到角色，日志一直刷"向下滚动第 N 次继续查找"，但列表根本没动
 
-`role_list_scroll` 的 `point` 坐标没落在角色列表上。鼠标滚轮只对**光标下面**的东西起作用，所以这个坐标必须在角色列表范围内。用 `helper.py` 重新量一个列表中间的坐标（见[第五步](#第五步标定屏幕位置)最后）。
+两种原因：
+
+1. **鼠标停在下拉框上，光标和悬停高亮盖住了列表里的那一条**，截图匹配就认不出来。现在点开下拉框后会等 `role_list_scroll.open_wait_sec`（默认 3 秒）让列表渲染出来，再按 `role_list_scroll.open_offset`（默认向右上 10px）把鼠标挪开，然后才开始识别；并且**每一轮滚动查找前都重新展开一次**下拉框（防止那一下点击被吞掉之后白滚一整轮）。失败时会在 `screenshots/<日期>/setup_fail_<角色>_<时分秒>.png` 留一张全屏截图，直接看图就知道当时卡在哪个界面。
+2. **`role_list_scroll` 的 `point` 坐标没落在角色列表上**。鼠标滚轮只对**光标下面**的东西起作用，所以这个坐标必须在角色列表范围内。用 `helper.py` 重新量一个列表中间的坐标（见[第五步](#第五步标定屏幕位置)最后）。
+
+> 注意下拉框的点击是「展开/收起」切换：万一列表本来就是开着的，重新点这一下会把它收起来，下一轮再点回来——所以 `max_rounds` 给了 4 轮富余，不要调回 3。
 
 ### 荼蘼每一行都读成一样的颜色
 
@@ -631,6 +636,7 @@ queue_settings:
 - 失败重试会按 pid 精确关闭该角色的游戏窗口，不会误关别的角色。
 - **setup 阶段失败**（登录/选角色/在荼蘼里选方案时图片一直识别不到）也会先清理再重试：按「本次 setup 前后的『一梦江湖』窗口差集」关掉这一次新开的窗口（跳过 pid 属于已在运行的客户端的窗口，不误杀并发中的角色），窗口还没建出来就失败时按启动器进程 pid 兜底，渠道服的 idv-login 残留进程也一并关掉。否则每重试一次就多留一个窗口，很快堆满屏幕。
 - 每次「登录完成 → 操作荼蘼」之前，以及扫描空闲行之前，都会先把荼蘼窗口拉回 `(0,0)` 并强制置前：刚进游戏时前台是游戏客户端，会把荼蘼整个盖住，此时按坐标点刷新/方案下拉框会点到游戏窗口上。
+- **荼蘼界面操作是原子的**：「置前 → 刷新 → 展开方案下拉列表 → 认出方案 → 点开始」这一整段在一把全局互斥锁里执行，监控线程的「点掉错误弹窗 + 截图」和调度器的「扫描空闲行」都要排队等它做完，不会插进来把展开着的下拉列表收掉。监控线程等锁最多 `monitor_settings.ui_lock_timeout_sec`（默认 180 秒），超时就跳过本轮、下一轮再看，不会被卡死。选方案这一段单次失败还会**就地重做**（次数 `retries.tu_mi_script_select`，默认 3），实在不行才抛给调度器让角色重新登录。
 - 已确认的参考色：运行中 `(144,238,144)`，异常退出 `(255,192,203)`。
 
 ## 配置项
@@ -654,11 +660,11 @@ queue_settings:
 | --- | --- |
 | `points` | 固定点击坐标（绝对屏幕像素）：`select_role`、`tu_mi_daily_menu`、`script_choose_base` / `script_run_base`（荼蘼第 1 行，其余行按 `monitor_settings.row.height` 推算）、`script_dropdown_offset_y` |
 | `regions` | 图像搜索范围，格式为 `left / top / width / height`（**不是四个角坐标**）：`account_list` 账号下拉列表、`script_list` 方案下拉列表（`top` 由程序按行号算，不用配） |
-| `images` | 通用界面元素的图像模板路径，共 12 张：`init_known` / `other_account` / `logo` / `an_login` / `login_enter_game` / `role_enter_game` / `account_selection` / `dream_server` / `dream_checkbox` / `tu_mi_logo` / `tu_mi_main` / `tu_mi_refresh` |
+| `images` | 通用界面元素的图像模板路径，共 12 张：`init_known` / `other_account` / `logo` / `an_login` / `login_enter_game` / `role_enter_game` / `account_selection` / `dream_server` / `dream_checkbox` / `tu_mi_logo` / `tu_mi_main` / `tu_mi_refresh`。其中 `tu_mi_logo`（托盘图标）只在**兜底路径**用：启动时优先按 pid + 窗口标题直接把荼蘼主窗口唤出来（最小化到托盘的窗口是被 `SW_HIDE` 藏起来的，句柄一直在，`SW_SHOW` 就能请回来），找不到窗口才退回去认托盘图标 |
 | `image_match` | `confidence` 匹配相似度阈值、`retry_interval_sec` 找图失败后的重试间隔、`default_max_retries` 默认重试上限 |
 | `retries` | 各步骤单独的找图重试次数上限（`other_account` / `logo` / `an_login` / `account_selection` / `login_enter_game` / `dream_checkbox` / `role_enter_game` / `tu_mi_refresh`） |
 | `account_list_scroll` | 账号列表用方向键逐条翻找的参数：`first_press_count` 首轮按键数、`next_press_min` / `next_press_max` 之后每轮的随机步长、`max_attempts` 最大轮数、`channel_pagedown_count` 渠道服账号先整页翻几次 |
-| `role_list_scroll` | 角色列表滚轮翻页：`point` 滚动时鼠标位置（必须落在列表内，滚轮只对光标下的控件生效）、`clicks` 每次滚动格数（负数向下，建议略小于一屏以保证重叠）、`max_scrolls` 单轮最大滚动次数、`max_rounds` 回顶重试轮数 |
+| `role_list_scroll` | 角色列表滚轮翻页：`point` 滚动时鼠标位置（必须落在列表内，滚轮只对光标下的控件生效）、`clicks` 每次滚动格数（负数向下，建议略小于一屏以保证重叠）、`max_scrolls` 单轮最大滚动次数、`max_rounds` 重新展开+回顶重试的轮数、`open_wait_sec` 点开下拉框后等列表渲染的秒数、`open_offset` 展开后把鼠标从下拉框上挪开的偏移（默认向右上 10px，避免光标盖住列表项） |
 | `delays` | 11 项等待时长：`global`（即 `pyautogui.PAUSE`）、`software_init`、`after_game_launch`、`relogin_wait`（关掉残留游戏窗口后的等待，默认 1800）等 |
 | `timeouts` | 9 项超时：`find_window` / `bring_to_front` / `wait_process` / `new_game_window` / `kill_process` / `poll_interval` 等 |
 | `process_keywords` | 按可执行文件路径定位进程的关键字：`tu_mi` / `idv_login` |

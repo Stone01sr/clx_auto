@@ -6,6 +6,7 @@ import pyautogui
 import win32gui
 
 from tu_mi_queue.models import TaskStatus, TU_MI_INITIALIZING
+from tu_mi_queue.ui_lock import tu_mi_ui
 
 logger = logging.getLogger(__name__)
 
@@ -137,6 +138,8 @@ class TuMiMonitor:
         self.color_tolerance = monitor_cfg["color_tolerance"]
         self.confidence = config["global_settings"]["image_match"]["confidence"]
         self.stop_join_timeout = monitor_cfg["stop_join_timeout_sec"]
+        # 等荼蘼界面锁的上限：主流程正在注册脚本时监控就得让路，等超过这个时间就跳过本轮
+        self.ui_lock_timeout = monitor_cfg["ui_lock_timeout_sec"]
         self.pending_timeout = queue_cfg["pending_timeout_sec"]
         self.max_retries = queue_cfg["max_retries"]
         self._stop_event = threading.Event()
@@ -164,14 +167,22 @@ class TuMiMonitor:
 
     def poll_once(self):
         self._poll_count += 1
-        hwnd = self.find_tu_mi_hwnd_fn()
-        if not hwnd:
-            logger.warning("[监控第%d轮] 未找到荼蘼窗口，跳过本轮状态识别", self._poll_count)
-            return
+        # 点弹窗、截图都是在动/在读荼蘼界面，必须和"注册脚本"那种连续操作互斥：
+        # 一次插进去的点击就能把人家展开着的方案下拉列表收掉，导致角色整个重新登录。
+        # 这里带超时地拿锁，拿不到就跳过本轮——监控只是周期性看一眼状态，绝不能把自己卡死
+        with tu_mi_ui(f"[监控第{self._poll_count}轮] 截图识别荼蘼状态",
+                      timeout=self.ui_lock_timeout) as acquired:
+            if not acquired:
+                return
+            hwnd = self.find_tu_mi_hwnd_fn()
+            if not hwnd:
+                logger.warning("[监控第%d轮] 未找到荼蘼窗口，跳过本轮状态识别", self._poll_count)
+                return
 
-        self._dismiss_error_popup_if_needed()
+            self._dismiss_error_popup_if_needed()
 
-        screenshot = capture_tu_mi_screenshot(hwnd)
+            screenshot = capture_tu_mi_screenshot(hwnd)
+
         today = datetime.date.today()
         moment = datetime.datetime.now()
         screenshot_path = self.state_store.save_screenshot(today, screenshot, moment)

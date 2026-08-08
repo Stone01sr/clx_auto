@@ -20,6 +20,7 @@ from tu_mi_queue.models import QueueState, TaskStatus
 from tu_mi_queue.state_store import StateStore
 from tu_mi_queue.monitor import TuMiMonitor
 from tu_mi_queue.scheduler import Scheduler
+from tu_mi_queue.ui_lock import tu_mi_ui
 
 logger = logging.getLogger(__name__)
 today = datetime.datetime.now()
@@ -97,36 +98,88 @@ def find_visible_hwnd_by_pid(pid, timeout=TIMEOUTS["find_window"], interval=TIME
         time.sleep(interval)
     return None
 
+def _attach_thread_input(from_thread, to_thread, attach):
+    """AttachThreadInput的安全包装，返回是否真的接上了。
+
+    两个坑：
+    1）pywin32里这个函数成功时返回None、失败时抛异常，所以不能拿返回值当"成功"判断
+       （原来就是这么写的，结果是接上了却永远不会断开，输入队列一直挂着）；
+    2）它失败的原因五花八门，而且大多不是我们能控制的：前台窗口属于提权进程或UAC安全桌面、
+       那个线程没有消息队列、线程刚好退出了——都会报 (87, '参数错误')。
+    接不上不是致命问题，后面的BringWindowToTop/SetForegroundWindow照样可以试，所以这里只记日志。"""
+    if not from_thread or not to_thread or from_thread == to_thread:
+        return False
+    try:
+        win32process.AttachThreadInput(from_thread, to_thread, attach)
+        return True
+    except Exception as e:
+        logger.info("AttachThreadInput(%s -> %s, attach=%s) 失败，跳过这一步继续置前: %s",
+                    from_thread, to_thread, attach, e)
+        return False
+
+def _raise_window_by_topmost(hwnd):
+    """SetForegroundWindow被系统拒绝时的退路：把窗口临时设成置顶再取消置顶。
+    这样虽然拿不到键盘焦点，但能把它抬到Z序最前、不被别的窗口盖住——
+    而我们真正需要的是"鼠标点到那个坐标时点中的是荼蘼"，靠的正是Z序而不是焦点。"""
+    try:
+        flags = win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_SHOWWINDOW
+        win32gui.SetWindowPos(hwnd, win32con.HWND_TOPMOST, 0, 0, 0, 0, flags)
+        win32gui.SetWindowPos(hwnd, win32con.HWND_NOTOPMOST, 0, 0, 0, 0, flags)
+        return True
+    except Exception as e:
+        logger.warning("用置顶方式抬升窗口也失败（hwnd=%s）: %s", hwnd, e)
+        return False
+
 def force_window_foreground(hwnd):
-    """将窗口强制置于最前并激活。
+    """将窗口强制置于最前并激活，返回它最终是不是前台窗口。
     Windows有前台锁定限制：非当前前台线程直接调用SetForegroundWindow经常被系统静默忽略，
     窗口API层面显示visible=True，但实际停在原位、被其他窗口盖住，用户看不到——
-    通过AttachThreadInput临时把自己的输入线程"接"到目标窗口线程上，可以绕过该限制。"""
+    通过AttachThreadInput临时把自己的输入线程"接"到目标窗口线程上，可以绕过该限制。
+    整套动作里的每一步都可能被系统拒绝，所以逐步降级：接线程 -> 常规置前 -> 临时置顶抬升，
+    最后以"当前前台窗口到底是不是它"为准，而不是以"哪个API没抛异常"为准。"""
     try:
         if win32gui.IsIconic(hwnd):
             win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
         else:
             win32gui.ShowWindow(hwnd, win32con.SW_SHOW)
+    except Exception as e:
+        logger.warning("显示/还原窗口失败（hwnd=%s）: %s", hwnd, e)
 
-        fg_hwnd = win32gui.GetForegroundWindow()
-        fg_thread, _ = win32process.GetWindowThreadProcessId(fg_hwnd) if fg_hwnd else (0, 0)
-        target_thread, _ = win32process.GetWindowThreadProcessId(hwnd)
-        cur_thread = win32api.GetCurrentThreadId()
+    fg_hwnd = win32gui.GetForegroundWindow()
+    fg_thread = win32process.GetWindowThreadProcessId(fg_hwnd)[0] if fg_hwnd else 0
+    target_thread = win32process.GetWindowThreadProcessId(hwnd)[0]
+    cur_thread = win32api.GetCurrentThreadId()
 
-        attached_fg = fg_thread and fg_thread != target_thread and win32process.AttachThreadInput(fg_thread, target_thread, True)
-        attached_cur = cur_thread != target_thread and win32process.AttachThreadInput(cur_thread, target_thread, True)
+    attached_fg = _attach_thread_input(fg_thread, target_thread, True)
+    attached_cur = _attach_thread_input(cur_thread, target_thread, True)
+    try:
         try:
             win32gui.BringWindowToTop(hwnd)
             win32gui.SetForegroundWindow(hwnd)
-        finally:
-            if attached_fg:
-                win32process.AttachThreadInput(fg_thread, target_thread, False)
-            if attached_cur:
-                win32process.AttachThreadInput(cur_thread, target_thread, False)
-        return True
-    except Exception as e:
-        logger.warning("强制置前窗口失败（hwnd=%s）: %s", hwnd, e)
-        return False
+        except Exception as e:
+            logger.info("常规置前被系统拒绝（hwnd=%s）: %s，改用临时置顶的方式抬升", hwnd, e)
+            _raise_window_by_topmost(hwnd)
+    finally:
+        # 一定要断开，否则输入队列一直挂在目标线程上，会影响后续的鼠标键盘行为
+        if attached_fg:
+            _attach_thread_input(fg_thread, target_thread, False)
+        if attached_cur:
+            _attach_thread_input(cur_thread, target_thread, False)
+
+    if win32gui.GetForegroundWindow() != hwnd:
+        # 前台切换有一点延迟，给它一次确认的机会，还不行就再用置顶兜一次
+        time.sleep(TIMEOUTS["foreground_settle"])
+        if win32gui.GetForegroundWindow() != hwnd:
+            _raise_window_by_topmost(hwnd)
+
+    ok = win32gui.GetForegroundWindow() == hwnd
+    if ok:
+        logger.info("已将窗口置于前台，标题: %s", win32gui.GetWindowText(hwnd))
+    else:
+        logger.warning("窗口未能拿到前台焦点（hwnd=%s，标题: %s），已尽力抬到最上层；"
+                       "若后续按坐标的点击落到了别的窗口，多半就是这里没成功",
+                       hwnd, win32gui.GetWindowText(hwnd))
+    return ok
 
 def force_window_opaque(hwnd):
     """部分软件用WS_EX_LAYERED做窗口淡入动画，通过自动化方式启动时该动画可能卡住，
@@ -143,22 +196,75 @@ def force_window_opaque(hwnd):
     except Exception as e:
         logger.warning("修正窗口透明度失败（hwnd=%s）: %s", hwnd, e)
 
-def bring_window_to_front_by_pid(pid, timeout=TIMEOUTS["bring_to_front"]):
-    """按pid定位窗口（不依赖标题/截图），移到左上角、修正透明度异常并强制置于前台"""
-    hwnd = find_visible_hwnd_by_pid(pid, timeout=timeout)
-    if not hwnd:
-        logger.warning("等待%s秒仍未找到pid=%s的可见窗口，跳过置前", timeout, pid)
-        return False
+def bring_hwnd_to_front(hwnd):
+    """把指定窗口移到屏幕左上角、修正透明度异常并强制置于前台。
+    移到(0,0)是硬性要求：所有点位都是按窗口左上角贴屏幕左上角标定的"""
     try:
         left, top, right, bottom = win32gui.GetWindowRect(hwnd)
         win32gui.MoveWindow(hwnd, 0, 0, right - left, bottom - top, True)
     except Exception as e:
         logger.warning("移动窗口位置失败（hwnd=%s）: %s", hwnd, e)
     force_window_opaque(hwnd)
-    ok = force_window_foreground(hwnd)
-    if ok:
-        logger.info("已将窗口置于前台，标题: %s", win32gui.GetWindowText(hwnd))
-    return ok
+    return force_window_foreground(hwnd)
+
+def bring_window_to_front_by_pid(pid, timeout=TIMEOUTS["bring_to_front"]):
+    """按pid定位窗口（不依赖标题/截图），移到左上角、修正透明度异常并强制置于前台"""
+    hwnd = find_visible_hwnd_by_pid(pid, timeout=timeout)
+    if not hwnd:
+        logger.warning("等待%s秒仍未找到pid=%s的可见窗口，跳过置前", timeout, pid)
+        return False
+    return bring_hwnd_to_front(hwnd)
+
+def find_hwnd_by_pid_and_title(pid, title_keyword):
+    """按pid+窗口标题关键字找顶层窗口，返回(hwnd, 当前是否可见)；找不到返回(None, False)。
+
+    和find_visible_hwnd_by_pid的区别：这个连"隐藏"的窗口也认。软件最小化到托盘时，
+    主窗口并不是被最小化，而是被ShowWindow(SW_HIDE)藏了起来——IsWindowVisible返回False，
+    但窗口对象一直都在，直接SW_SHOW就能把它请回来，根本不用去屏幕上戳托盘图标。
+    荼蘼进程下有二十多个顶层窗口（WinForms的各种tooltip/隐藏容器），只有主窗口带标题，
+    所以用标题关键字就能准确挑出它。"""
+    matched = []
+
+    def _enum_handler(hwnd, _):
+        _, found_pid = win32process.GetWindowThreadProcessId(hwnd)
+        if found_pid != pid:
+            return
+        title = win32gui.GetWindowText(hwnd)
+        if title and title_keyword in title:
+            matched.append((hwnd, bool(win32gui.IsWindowVisible(hwnd))))
+
+    win32gui.EnumWindows(_enum_handler, None)
+    if not matched:
+        return None, False
+    # 可见的优先（主窗口已经显示出来时，不要挑到某个同名的隐藏残留窗口）
+    matched.sort(key=lambda item: not item[1])
+    return matched[0]
+
+def show_tu_mi_window(pid, timeout=TIMEOUTS["find_window"], interval=TIMEOUTS["poll_interval"]):
+    """把荼蘼主窗口显示出来并尽量置前，返回的是"窗口拿到了没"，不是"置前成功了没"。
+    已经显示着就直接置前，被藏到托盘就先唤出来再置前。
+    这条路取代了"在屏幕上找托盘图标点一下"——托盘图标可能被折叠进"显示隐藏的图标"里、
+    可能在另一块屏幕上、不同缩放比例下还可能认不出来，而窗口句柄一直是稳的。
+
+    置前失败（系统前台锁定、AttachThreadInput被拒等）不算这一步失败：窗口明明已经在了，
+    这时候退回去满屏找托盘图标只会白等一场、最后报"荼蘼没找到"。置前那点问题后面还有
+    好几次机会补救（每次操作荼蘼之前都会再置前一次）。"""
+    deadline = time.time() + timeout
+    while True:
+        hwnd, visible = find_hwnd_by_pid_and_title(pid, TITLES["tu_mi"])
+        if hwnd:
+            if not visible:
+                win32gui.ShowWindow(hwnd, win32con.SW_SHOW)
+                logger.info("荼蘼主窗口处于隐藏状态（多半是最小化到了托盘），已直接唤出（hwnd=%s）", hwnd)
+            if win32gui.IsIconic(hwnd):
+                win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+            if not bring_hwnd_to_front(hwnd):
+                logger.warning("荼蘼主窗口（hwnd=%s）已显示出来，但没能确认置于最前，继续后续流程", hwnd)
+            return True
+        if time.time() >= deadline:
+            logger.warning("等待%s秒仍未找到pid=%s下标题含\"%s\"的窗口", timeout, pid, TITLES["tu_mi"])
+            return False
+        time.sleep(interval)
 
 def dismiss_timezone_warning(timeout=TIMEOUTS["timezone_warning"], interval=TIMEOUTS["poll_interval"]):
     """荼蘼启动时如果检测到系统时区不是"中国北京"会弹出"警告"对话框；
@@ -223,18 +329,28 @@ def ensure_script_software_open():
     return tu_mi_pid
 
 def open_script_window():
+    """把荼蘼准备到"日常"页并置于前台，返回主窗口hwnd（实在找不到窗口时返回None）。
+
+    唤出主界面有两条路，优先走窗口句柄那条：
+    1）按pid+标题直接找主窗口，藏起来就SW_SHOW唤出、最小化就还原，然后置前——不依赖屏幕内容；
+    2）实在找不到窗口才退回到"在屏幕上认托盘图标点一下"。托盘这条路很脆：图标可能被折叠进
+       "显示隐藏的图标"的溢出面板里根本不在屏幕上、可能在另一块屏幕上、缩放比例变了还可能认不出来，
+       所以只当兜底，不再当主路径。"""
     tu_mi_pid = ensure_script_software_open()
-    wait_image_and_click(IMAGES['tu_mi_logo'])
-    time.sleep(DELAYS["after_tu_mi_logo"])
-    if tu_mi_pid:
-        bring_window_to_front_by_pid(tu_mi_pid, timeout=TIMEOUTS["tu_mi_front"])
-    else:
-        script_window = pwc.getWindowsWithTitle(TITLES["tu_mi"])[0]
-        script_window.moveTo(0, 0)
-        script_window.activate()
+    shown = show_tu_mi_window(tu_mi_pid) if tu_mi_pid else False
+    if not shown:
+        logger.warning("未能直接唤出荼蘼主窗口，退回到点击托盘图标的方式（若图标被折叠在"
+                       "\"显示隐藏的图标\"里，请把它拖到托盘常显区域）")
+        wait_image_and_click(IMAGES['tu_mi_logo'], max_retries=RETRIES["tu_mi_logo"])
+        time.sleep(DELAYS["after_tu_mi_logo"])
+        if tu_mi_pid:
+            bring_window_to_front_by_pid(tu_mi_pid, timeout=TIMEOUTS["tu_mi_front"])
+
     wait_image_and_click(IMAGES['tu_mi_main'])
     pyautogui.click(POINTS["tu_mi_daily_menu"]["x"], POINTS["tu_mi_daily_menu"]["y"])
-    return pwc.getWindowsWithTitle(TITLES["tu_mi"])[0]
+    logger.info("已切到荼蘼\"日常\"页，荼蘼准备就绪")
+    hwnd, _ = find_hwnd_by_pid_and_title(tu_mi_pid, TITLES["tu_mi"]) if tu_mi_pid else (None, False)
+    return hwnd
 
 def get_roles():
     """获取所有启用的角色，按优先级排序"""
@@ -358,12 +474,21 @@ def scroll_list_to_top(scroll_cfg):
         pyautogui.scroll(up_clicks, x=point["x"], y=point["y"])
 
 
-def wait_image_and_click_in_scrollable_list(image_path, scroll_cfg, confidence=MATCH["confidence"]):
+def wait_image_and_click_in_scrollable_list(image_path, scroll_cfg, confidence=MATCH["confidence"],
+                                            open_list_fn=None):
     """在可滚动列表中查找并点击图片，找不到抛异常（交由上层按失败重试处理）。
     和wait_image_and_click的区别：那个只在当前屏原地重试，角色不在首屏时永远找不到；
-    这个会逐屏向下翻找，整轮扫完仍没找到就滚回顶部再来一轮（应对列表还没渲染完的情况）。"""
+    这个会逐屏向下翻找，整轮扫完仍没找到就滚回顶部再来一轮（应对列表还没渲染完的情况）。
+
+    open_list_fn：每一轮开始前调用，负责把列表（重新）展开。列表是靠一次固定坐标的点击展开的，
+    这一下要是没生效（界面还没渲染完、点击被吞掉），列表压根没打开，后面滚多少屏都是白滚，
+    整轮整轮地失败——所以每轮都重新展开一次，而不是只在第一轮之前点那一下。
+    注意下拉框的点击是"开/关"切换：万一列表本来就是开着的，这一下会把它关上，
+    下一轮再点回来，所以 max_rounds 要留出富余（配置里给了4轮）。"""
     max_rounds = scroll_cfg["max_rounds"]
     for round_index in range(max_rounds):
+        if open_list_fn:
+            open_list_fn(round_index)
         pos = scroll_list_and_locate(image_path, scroll_cfg, confidence=confidence)
         if pos:
             pyautogui.click(pos)
@@ -374,6 +499,23 @@ def wait_image_and_click_in_scrollable_list(image_path, scroll_cfg, confidence=M
                         round_index + 1, max_rounds, image_path)
             scroll_list_to_top(scroll_cfg)
     raise Exception(f"在列表中滚动查找{max_rounds}轮仍未找到图片: {image_path}")
+
+
+def save_failure_screenshot(role_name):
+    """setup失败时截一张全屏存到 screenshots/<日期>/setup_fail_<角色>_<时分秒>.png。
+    这类失败几乎都是"界面不是我以为的样子"，日志只能看到"图片没找到"，
+    有这张图才能一眼看出当时到底卡在哪个界面（列表没展开？弹了公告？还在加载？）"""
+    try:
+        moment = datetime.datetime.now()
+        day_dir = os.path.join(config["storage_settings"]["screenshot_dir"], f"{moment:%Y-%m-%d}")
+        os.makedirs(day_dir, exist_ok=True)
+        path = os.path.join(day_dir, f"setup_fail_{role_name}_{moment:%H%M%S}.png")
+        pyautogui.screenshot().save(path)
+        logger.info("已保存角色 %s 的失败现场截图: %s", role_name, path)
+        return path
+    except Exception as e:
+        logger.warning("保存角色 %s 的失败现场截图失败: %s", role_name, e)
+        return None
 
 
 class RoleLaunchContext:
@@ -390,6 +532,7 @@ class RoleLaunchContext:
 
     def cleanup(self, role_name):
         """关掉本次setup新开的游戏窗口和辅助进程，让重试从干净的状态重新开始"""
+        save_failure_screenshot(role_name)   # 关窗口之前先留证据，否则事后完全看不出当时界面卡在哪
         closed = close_new_clx_windows(self.existing_clx_windows)
         logger.info("角色 %s setup失败清理：关闭了%d个本次新打开的一梦江湖窗口", role_name, closed)
         # 窗口一个都没关到，说明失败得很早（客户端窗口还没建出来、或标题还不是"一梦江湖"），
@@ -573,11 +716,24 @@ def _setup_role_steps(role, row_index, ctx):
     if not window_pid:
         logger.warning("未能捕获角色 %s 新打开的游戏客户端pid，失败时可能无法精确关闭该窗口", role['name'])
 
-    # 点开角色选择下拉框。账号下角色较多时目标角色可能不在首屏，需要滚动翻页查找
-    pyautogui.click(points["select_role"]["x"], points["select_role"]["y"])
-    logger.info('已点击角色选择，即将在角色列表中滚动查找角色: %s', role['login_role_image'])
-    wait_image_and_click_in_scrollable_list(role['login_role_image'],
-                                            G["role_list_scroll"])
+    scroll_cfg = G["role_list_scroll"]
+
+    def open_role_list(round_index):
+        """展开角色选择下拉框，等列表渲染出来，再把鼠标从下拉框上挪开。
+        点完之后光标就停在下拉框/列表项上，鼠标指针本身和悬停高亮会盖住那一条，
+        截图匹配自然认不出来；往右上挪开一点，列表就恢复成截图时的样子了。
+        每一轮滚动查找前都重新展开一次，避免这一下被吞掉之后白滚一整轮。"""
+        x = points["select_role"]["x"]
+        y = points["select_role"]["y"]
+        pyautogui.click(x, y)
+        time.sleep(scroll_cfg["open_wait_sec"])
+        offset = scroll_cfg["open_offset"]
+        pyautogui.moveTo(x + offset["x"], y + offset["y"])
+        logger.info("第%d轮：已点击角色选择下拉框并把鼠标移开到(%d, %d)，即将在角色列表中滚动查找角色: %s",
+                    round_index + 1, x + offset["x"], y + offset["y"], role['login_role_image'])
+
+    wait_image_and_click_in_scrollable_list(role['login_role_image'], scroll_cfg,
+                                            open_list_fn=open_role_list)
     time.sleep(DELAYS["after_role_selected"])
     # 先确定当前要进入经典服还是梦境服：如找到"梦境私服"标记，点击勾选框取消选中
     try:
@@ -589,8 +745,40 @@ def _setup_role_steps(role, row_index, ctx):
     wait_image_and_click(images['role_enter_game'], max_retries=RETRIES["role_enter_game"])
     time.sleep(DELAYS["after_enter_game"])
 
-    # 登录流程结束、要开始操作荼蘼了：先把荼蘼从游戏窗口后面拉到最前，否则下面这些
-    # 按坐标的点击会全部落到盖在上面的游戏客户端上
+    register_script_in_tu_mi(role, row_index)
+
+    return window_pid
+
+
+def register_script_in_tu_mi(role, row_index):
+    """在荼蘼第row_index行选好该角色要跑的方案并点"开始"。
+
+    整段（置前 -> 刷新 -> 展开方案下拉列表 -> 认出方案 -> 点中 -> 点开始）都在荼蘼界面锁里做，
+    是原子的：展开的下拉列表是个很脆弱的临时状态，监控线程点掉错误弹窗、或者别处把窗口
+    置前/截图，都会让它收起来，紧接着的认图就会失败。
+
+    单次失败（最典型的就是列表被盖住/被收起来）不直接判角色失败——那要整个重新登录一次，
+    代价太大——先原地把整段重做一遍，重试次数用完了才把异常抛给调度器。"""
+    attempts = RETRIES["tu_mi_script_select"]
+    with tu_mi_ui(f"角色{role['name']}在荼蘼第{row_index}行注册方案"):
+        for attempt in range(1, attempts + 1):
+            try:
+                _register_script_once(role, row_index)
+                return
+            except Exception as e:
+                if attempt >= attempts:
+                    raise
+                logger.warning("第%d/%d次在荼蘼第%d行为角色 %s 选择方案失败，原地重做整段: %s",
+                               attempt, attempts, row_index, role['name'], e)
+                time.sleep(DELAYS["after_page_switch"])
+
+
+def _register_script_once(role, row_index):
+    """注册方案的单次尝试，调用方负责持有荼蘼界面锁并按需重试"""
+    points = POINTS
+    images = IMAGES
+
+    # 先把荼蘼从游戏窗口后面拉到最前，否则下面这些按坐标的点击会全部落到盖在上面的游戏客户端上
     bring_tu_mi_to_front()
     time.sleep(DELAYS["after_page_switch"])
 
@@ -618,8 +806,6 @@ def _setup_role_steps(role, row_index, ctx):
     y = points['script_run_base']['y'] + interval
     pyautogui.click(x, y)
     logger.info("于 x=%d，y=%d 处点击运行脚本", x, y)
-
-    return window_pid
 
 
 def close_window_with_pywinauto(title, index):

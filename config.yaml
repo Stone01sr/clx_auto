@@ -5,43 +5,43 @@ roles:
     account_image: "res/stone_account.png"           # 账号图片
     login_role_image: "res/stone_role_login.png"     # 登录页面角色选择图片
     script_image: "res/stone_script_item.png"        # 角色要挂的脚本图片
-    enable: false
+    enable: true
 
   - name: "guang"
     account_image: "res/guang_account.png"          # 账号图片
     login_role_image: "res/guang_role_login.png"    # 登录页面角色选择图片
     script_image: "res/stone_script_item.png"       # 角色要挂的脚本图片
-    enable: false
+    enable: true
 
   - name: "qi"
     account_image: "res/qi_account.png"
     login_role_image: "res/qi_role_login.png"
     script_image: "res/guang_script_item.png"
-    enable: false
+    enable: true
 
   - name: "lao_mo"
     account_image: "res/lao_mo_account.png"
     login_role_image: "res/lao_mo_role_login.png"
     script_image: "res/lao_mo_script_item.png"
-    enable: false
+    enable: true
 
   - name: "tu_dou"
     account_image: "res/tu_dou_account.png"
     login_role_image: "res/tu_dou_role_login.png"
     script_image: "res/guang_script_item.png"
-    enable: false
+    enable: true
 
   - name: "zhan_ye"
     account_image: "res/zhan_ye_account.png"
     login_role_image: "res/zhan_ye_role_login.png"
     script_image: "res/zhan_ye_script_item.png"
-    enable: false
+    enable: true
 
   - name: "lu"
     account_image: "res/lu_account.png"
     login_role_image: "res/lu_role_login.png"
     script_image: "res/guang_script_item.png"
-    enable: false
+    enable: true
 
   - name: "hao_wen"
     account_image: "res/hao_wen_account.png"
@@ -67,12 +67,6 @@ roles:
     script_image: "res/yu_gou_script_item.png"
     enable: false
 
-  - name: "an_an"
-    login_role_image: "res/an_role_login.png"     # 登录页面角色选择图片
-    script_image: "res/an_script_item.png"        # 角色要挂的脚本图片
-    channel_account: true                          # 渠道服账号，需借助idv-login辅助登录，不能直接登录
-    enable: true
-
   - name: "xiao_hong_mao"
     account_image: "res/xiao_hong_mao_account.png"  # 账号图片
     login_role_image: "res/xiao_hong_mao_role_login.png"# 登录页面角色选择图片
@@ -95,6 +89,12 @@ roles:
     account_image: "res/xie_account.png"            # 账号图片
     login_role_image: "res/xie_role_login.png"      # 登录页面角色选择图片
     script_image: "res/guang_script_item.png"       # 角色要挂的脚本图片
+    enable: true
+
+  - name: "an_an"
+    login_role_image: "res/an_role_login.png"     # 登录页面角色选择图片
+    script_image: "res/an_script_item.png"        # 角色要挂的脚本图片
+    channel_account: true                          # 渠道服账号，需借助idv-login辅助登录，不能直接登录
     enable: true
 
 # 全局配置
@@ -158,6 +158,10 @@ global_settings:
     dream_checkbox: 1             # 取消勾选梦境私服（没勾选时本来就找不到，1次即可）
     role_enter_game: 5            # 角色选好后点击进入游戏
     tu_mi_refresh: 5              # 点击荼蘼的刷新按钮
+    tu_mi_logo: 20                # 兜底路径：在屏幕上找荼蘼托盘图标。正常情况下会直接按窗口句柄
+                                  # 唤出主窗口，根本走不到这里，所以给个有限次数，别一卡十几分钟
+    tu_mi_script_select: 3        # 在荼蘼里"展开方案下拉列表->认出方案->点开始"整段的重试次数。
+                                  # 列表被盖住/被收起来时就地重做整段，比让角色重新登录一次划算
 
   # 账号下拉列表的翻找设置：列表里账号很多时，要靠方向键逐条下移来找目标账号
   account_list_scroll:
@@ -174,8 +178,14 @@ global_settings:
       x: 1930
       y: 1250
     clicks: -3          # 每次滚动的滚轮格数，负数向下；建议略小于一屏，宁可两屏重叠也不要跳过角色
+    open_wait_sec: 3    # 点开角色下拉框后，等列表渲染出来的时间
+    open_offset:        # 展开后把鼠标从下拉框上挪开的偏移量（向右上）。光标和悬停高亮会盖住
+      x: 10             # 列表里的那一条，不挪开就认不出截图，表现为"滚了半天什么都找不到"
+      y: -10
     max_scrolls: 6      # 单轮最多向下滚动次数（实际角色很少超过3页，这里留了余量）
-    max_rounds: 3       # 从头到尾扫完一轮仍没找到时，滚回顶部重来的总轮数（应对列表尚未渲染完）
+    max_rounds: 4       # 从头到尾扫完一轮仍没找到时，重新展开列表+滚回顶部再来一轮的总轮数。
+                        # 每轮开始都会重新点一次下拉框，而点击是"开/关"切换：列表本来就开着时
+                        # 这一下会把它关上、下一轮才点回来，所以轮数要留出富余，不能只给3轮
 
   # 等待时间设置（单位：秒）。界面卡顿、机器较慢时可以整体调大
   delays:
@@ -196,11 +206,13 @@ global_settings:
     find_window: 15               # 按pid查找可见窗口
     bring_to_front: 20            # 把窗口移到前台
     wait_process: 30              # 等待某个进程启动
-    timezone_warning: 15          # 等待荼蘼的时区警告弹窗出现
+    timezone_warning: 5           # 等待荼蘼的时区警告弹窗出现。这个框是启动时立刻弹的，
+                                  # 没弹就是不会弹了，等久了纯属白等（没弹也不影响后续流程）
     tu_mi_front: 5                # 荼蘼主界面出现后再置前一次
     find_tu_mi_window: 5          # 监控线程定位荼蘼窗口
     new_game_window: 30           # 等待新开的游戏客户端窗口出现
     kill_process: 5               # 结束进程后等它真正退出
+    foreground_settle: 0.5        # 置前后等前台切换生效再复核（切换有延迟，别立刻就判定失败）
     poll_interval: 1              # 上述各类轮询的间隔
 
   # 软件位置
@@ -236,6 +248,8 @@ monitor_settings:
   screenshot_interval_sec: 300  # 荼蘼状态截图轮询间隔（默认5分钟）
   max_visible_rows: 10           # 荼蘼面板可见的角色行数，需按实际界面校准
   stop_join_timeout_sec: 10      # 程序收尾时等监控线程退出的最长时间
+  ui_lock_timeout_sec: 180       # 监控线程等"荼蘼界面锁"的上限：主流程正在注册脚本时监控要让路，
+                                 # 等超过这个时间就跳过本轮，下一轮再看（绝不能把监控线程卡死）
   # 行底色判定的容差：某个通道比另两个通道高出这个数才算"偏该色"。
   # 已用真实截图校准——运行中的行是(144,238,144)浅绿，异常退出的行是(255,192,203)粉红，容差40能正确区分
   color_tolerance: 40

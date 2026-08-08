@@ -3,6 +3,7 @@ import time
 
 from tu_mi_queue.models import TaskStatus
 from tu_mi_queue.monitor import capture_tu_mi_screenshot, scan_rows, find_topmost_empty_row
+from tu_mi_queue.ui_lock import tu_mi_ui
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +88,12 @@ class Scheduler:
             self._handle_setup_failure(task)
 
     def _find_empty_row(self):
+        # 置前、点弹窗、截图连起来才是一次有意义的"读荼蘼面板"，中间被别人插一脚
+        # （比如监控线程点掉弹窗、把窗口顺序搅乱）读出来的行状态就不可信了
+        with tu_mi_ui("扫描荼蘼空闲行"):
+            return self._find_empty_row_locked()
+
+    def _find_empty_row_locked(self):
         if self.bring_tu_mi_to_front_fn:
             try:
                 self.bring_tu_mi_to_front_fn()
