@@ -121,7 +121,7 @@ class TuMiMonitor:
     原始需求，又不会在颜色还没变、文字识别失败返回"未知"时被误判成已经开始运行。"""
 
     def __init__(self, config, queue_state, state_store, find_tu_mi_hwnd_fn, close_window_fn,
-                 dismiss_error_popup_fn=None):
+                 dismiss_popups_fn=None):
         monitor_cfg = config["monitor_settings"]
         queue_cfg = config["queue_settings"]
         self.queue_state = queue_state
@@ -130,7 +130,7 @@ class TuMiMonitor:
         self.close_window_fn = close_window_fn
         # 游戏异常退出时荼蘼会弹出模态错误框，弹出后整个荼蘼不可操作；每轮轮询先检查并点掉它，
         # 不传则跳过检测（保持向后兼容，不强制要求调用方提供）
-        self.dismiss_error_popup_fn = dismiss_error_popup_fn
+        self.dismiss_popups_fn = dismiss_popups_fn
         self.interval = monitor_cfg["screenshot_interval_sec"]
         self.max_rows = monitor_cfg["max_visible_rows"]
         self.row_cfg = monitor_cfg["row"]
@@ -170,16 +170,18 @@ class TuMiMonitor:
         # 点弹窗、截图都是在动/在读荼蘼界面，必须和"注册脚本"那种连续操作互斥：
         # 一次插进去的点击就能把人家展开着的方案下拉列表收掉，导致角色整个重新登录。
         # 这里带超时地拿锁，拿不到就跳过本轮——监控只是周期性看一眼状态，绝不能把自己卡死
-        with tu_mi_ui(f"[监控第{self._poll_count}轮] 截图识别荼蘼状态",
+        with tu_mi_ui(f"[第{self._poll_count}轮] 截图识别荼蘼状态",
                       timeout=self.ui_lock_timeout) as acquired:
             if not acquired:
                 return
+            # 弹框要在截图之前关掉：它是浮在面板上的，不关掉就会连它一起截进来，
+            # 被盖住的那几行会被读成空闲，主流程紧接着就往正在跑的行上塞新角色
+            self._dismiss_popups_if_needed()
+
             hwnd = self.find_tu_mi_hwnd_fn()
             if not hwnd:
-                logger.warning("[监控第%d轮] 未找到荼蘼窗口，跳过本轮状态识别", self._poll_count)
+                logger.warning("[第%d轮] 未找到荼蘼窗口，跳过本轮状态识别", self._poll_count)
                 return
-
-            self._dismiss_error_popup_if_needed()
 
             screenshot = capture_tu_mi_screenshot(hwnd)
 
@@ -192,13 +194,13 @@ class TuMiMonitor:
 
         with self.queue_state.lock:
             active = list(self.queue_state.active.items())
-            logger.info("[监控第%d轮] 截图已保存: %s，当前活跃任务%d个，全部行扫描结果: %s",
+            logger.info("[第%d轮] 截图已保存: %s，当前活跃任务%d个，全部行扫描结果: %s",
                         self._poll_count, screenshot_path, len(active),
                         {i: ("绿" if v["is_running_color"] else "白", v["raw_status"])
                          for i, v in sorted(row_statuses.items())})
 
             if not active:
-                logger.info("[监控第%d轮] 当前没有处于待运行/运行中的任务，跳过逐任务比对", self._poll_count)
+                logger.info("[第%d轮] 当前没有处于待运行/运行中的任务，跳过逐任务比对", self._poll_count)
 
             for role_name, task in active:
                 info = row_statuses.get(task.row_index)
@@ -214,20 +216,20 @@ class TuMiMonitor:
                 self._apply_task_update(task, info, screenshot_path)
 
             self._check_pending_timeouts(moment, screenshot_path)
-            logger.info("[监控第%d轮] 本轮处理完毕，队列状态: %s",
+            logger.info("[第%d轮] 本轮处理完毕，队列状态: %s",
                         self._poll_count, self.queue_state.summary_line())
 
         self.state_store.save(today, self.queue_state.snapshot())
 
-    def _dismiss_error_popup_if_needed(self):
-        if not self.dismiss_error_popup_fn:
+    def _dismiss_popups_if_needed(self):
+        if not self.dismiss_popups_fn:
             return
         try:
-            if self.dismiss_error_popup_fn():
-                logger.warning("[监控第%d轮] 检测到荼蘼异常退出错误弹窗，已点击\"确定\"关闭",
+            if self.dismiss_popups_fn():
+                logger.warning("[第%d轮] 截图前检测到荼蘼弹框并已关闭（弹框内容见上一条日志）",
                                 self._poll_count)
         except Exception:
-            logger.exception("[监控第%d轮] 检查/关闭荼蘼错误弹窗失败", self._poll_count)
+            logger.exception("[第%d轮] 检查/关闭荼蘼弹框失败", self._poll_count)
 
     def _apply_task_update(self, task, info, screenshot_path):
         is_running_color = info["is_running_color"]

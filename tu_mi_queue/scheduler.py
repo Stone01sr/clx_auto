@@ -15,7 +15,7 @@ class Scheduler:
     该角色就交给荼蘼后台挂机，不再占用自动化资源，真正的"并发"体现在荼蘼里同时挂着几个角色。"""
 
     def __init__(self, config, queue_state, role_lookup, setup_role_fn,
-                 find_tu_mi_hwnd_fn, close_window_fn, dismiss_error_popup_fn=None,
+                 find_tu_mi_hwnd_fn, close_window_fn, dismiss_popups_fn=None,
                  bring_tu_mi_to_front_fn=None):
         monitor_cfg = config["monitor_settings"]
         queue_cfg = config["queue_settings"]
@@ -28,7 +28,7 @@ class Scheduler:
         # 行状态全读错。扫描前先把荼蘼置前，不传则跳过（保持向后兼容）
         self.bring_tu_mi_to_front_fn = bring_tu_mi_to_front_fn
         # 荼蘼弹出异常退出错误框时会挡住整个面板、可能干扰空闲行扫描，扫描前先点掉它
-        self.dismiss_error_popup_fn = dismiss_error_popup_fn
+        self.dismiss_popups_fn = dismiss_popups_fn
         self.idle_poll_interval = queue_cfg["idle_poll_interval_sec"]
         self.wait_log_interval = queue_cfg["wait_log_interval_sec"]
         self.row_cfg = monitor_cfg["row"]
@@ -94,6 +94,14 @@ class Scheduler:
             return self._find_empty_row_locked()
 
     def _find_empty_row_locked(self):
+        # 先关弹框再置前：弹框是模态的，挂着的时候主窗口既置不到前、又会被弹框盖住一块，
+        # 这时候截出来的面板是花的，行状态全读错（读成一片空闲，然后往正在跑的行上塞角色）
+        if self.dismiss_popups_fn:
+            try:
+                if self.dismiss_popups_fn():
+                    logger.warning("扫描空闲行前检测到荼蘼弹框并已关闭（弹框内容见上一条日志）")
+            except Exception:
+                logger.exception("扫描空闲行前检查/关闭荼蘼弹框失败")
         if self.bring_tu_mi_to_front_fn:
             try:
                 self.bring_tu_mi_to_front_fn()
@@ -103,12 +111,6 @@ class Scheduler:
         if not hwnd:
             logger.warning("未找到荼蘼窗口，无法扫描空闲行")
             return None
-        if self.dismiss_error_popup_fn:
-            try:
-                if self.dismiss_error_popup_fn():
-                    logger.warning("扫描空闲行前检测到荼蘼异常退出错误弹窗，已点击\"确定\"关闭")
-            except Exception:
-                logger.exception("扫描空闲行前检查/关闭荼蘼错误弹窗失败")
         screenshot = capture_tu_mi_screenshot(hwnd)
         row_statuses = scan_rows(screenshot, self.row_cfg, self.max_rows, self.status_templates,
                                   self.color_tolerance, self.confidence)

@@ -1,6 +1,6 @@
 import datetime
 import os
-import sys
+import re
 from random import randint
 
 import pyautogui
@@ -21,18 +21,12 @@ from tu_mi_queue.state_store import StateStore
 from tu_mi_queue.monitor import TuMiMonitor
 from tu_mi_queue.scheduler import Scheduler
 from tu_mi_queue.ui_lock import tu_mi_ui
+from tu_mi_queue.log_setup import setup_logging
 
 logger = logging.getLogger(__name__)
 today = datetime.datetime.now()
-logging.basicConfig(
-    level=logging.INFO,
-    format='[%(asctime)s] %(levelname)s: %(message)s',
-    datefmt='%H:%M:%S',
-    handlers=[
-        logging.StreamHandler(sys.stdout),  # 输出到控制台
-        logging.FileHandler(f"app_{today:%Y-%m-%d}.log", encoding="utf-8")      # 输出到文件
-    ]
-)
+# 主流程和监控线程并发写同一份日志，格式里带线程标签列，控制台上还会给这一列上色
+setup_logging(log_file=f"app_{today:%Y-%m-%d}.log")
 
 with open("config.yaml", 'r', encoding='utf-8') as f:
     config = yaml.safe_load(f)
@@ -44,6 +38,7 @@ POINTS = G["points"]
 REGIONS = G["regions"]
 IMAGES = G["images"]
 TITLES = G["titles"]
+POPUP = G["tu_mi_popup"]
 PROC = G["process_keywords"]
 MATCH = G["image_match"]
 RETRIES = G["retries"]
@@ -82,13 +77,21 @@ def find_pid_by_keyword(keyword):
             continue
     return None
 
-def find_visible_hwnd_by_pid(pid, timeout=TIMEOUTS["find_window"], interval=TIMEOUTS["poll_interval"]):
-    """通过进程pid轮询查找其可见顶层窗口，返回hwnd，超时返回None"""
+def find_visible_hwnd_by_pid(pid, timeout=TIMEOUTS["find_window"], interval=TIMEOUTS["poll_interval"],
+                             title_keyword=None):
+    """通过进程pid轮询查找其可见顶层窗口，返回hwnd，超时返回None。
+
+    title_keyword不为空时只认标题含该关键字的窗口。荼蘼必须传这个参数：它弹出模态对话框时，
+    对话框也是这个进程下的可见顶层窗口，而且通常排在枚举结果的最前面，不筛标题就会把
+    弹框当成主窗口——截图截到的是弹框、置前置的是弹框、后面按坐标的点击全部落空。"""
     deadline = time.time() + timeout
     while time.time() < deadline:
         found_hwnd = []
         def _enum_handler(hwnd, _):
-            if win32gui.IsWindowVisible(hwnd) and win32gui.GetWindowText(hwnd):
+            title = win32gui.GetWindowText(hwnd)
+            if win32gui.IsWindowVisible(hwnd) and title:
+                if title_keyword and title_keyword not in title:
+                    return
                 _, found_pid = win32process.GetWindowThreadProcessId(hwnd)
                 if found_pid == pid:
                     found_hwnd.append(hwnd)
@@ -207,9 +210,11 @@ def bring_hwnd_to_front(hwnd):
     force_window_opaque(hwnd)
     return force_window_foreground(hwnd)
 
-def bring_window_to_front_by_pid(pid, timeout=TIMEOUTS["bring_to_front"]):
-    """按pid定位窗口（不依赖标题/截图），移到左上角、修正透明度异常并强制置于前台"""
-    hwnd = find_visible_hwnd_by_pid(pid, timeout=timeout)
+def bring_window_to_front_by_pid(pid, timeout=TIMEOUTS["bring_to_front"], title_keyword=None):
+    """按pid定位窗口（不依赖截图），移到左上角、修正透明度异常并强制置于前台。
+    title_keyword的作用见find_visible_hwnd_by_pid：有弹框的进程必须靠标题挑出主窗口，
+    否则会把弹框拖到(0,0)并置前，主窗口反而还在后面。"""
+    hwnd = find_visible_hwnd_by_pid(pid, timeout=timeout, title_keyword=title_keyword)
     if not hwnd:
         logger.warning("等待%s秒仍未找到pid=%s的可见窗口，跳过置前", timeout, pid)
         return False
@@ -285,23 +290,97 @@ def dismiss_timezone_warning(timeout=TIMEOUTS["timezone_warning"], interval=TIME
         time.sleep(interval)
     return False
 
-def dismiss_tu_mi_error_popup():
-    """游戏客户端异常退出时，荼蘼会弹出"<错误> 插件版本:xxx"的模态错误框（提示"创建DISPLAY失败
-    <错误信息 = 无效的窗口句柄。>"），弹出后整个荼蘼变得不可操作，必须先点掉"确定"才能恢复。
-    单次检查、不等待——由调用方（监控轮询/扫描空闲行前）按自己的节奏重复调用；
-    一次性点掉所有匹配的错误框，避免多个角色同时异常退出时堆叠了多个弹窗。"""
-    windows = findwindows.find_elements(title_re=TITLES["tu_mi_error_popup"], backend="uia")
-    if not windows:
+def list_tu_mi_popups(pid):
+    """列出荼蘼当前弹出的所有对话框，返回[(hwnd, 标题)]。
+
+    判据是"本进程下可见且有标题、标题里又不含'荼蘼'的顶层窗口"。荼蘼进程下有二十多个
+    顶层窗口，但除主窗口外全是WinForms的无标题隐藏容器/tooltip，所以带标题的非主窗口
+    必然是弹出来的对话框。用这条通用判据而不是给每种弹框配一条标题正则：荼蘼的弹框种类
+    没有穷举清单（"错误/插件版本"、"此窗口已存在于中控"、时区警告……），配漏一种就会像
+    2026-08-09 那样整条流程被一个没人认识的框挡住几个小时。"""
+    popups = []
+
+    def _enum_handler(hwnd, _):
+        if not win32gui.IsWindowVisible(hwnd):
+            return
+        title = win32gui.GetWindowText(hwnd)
+        if not title or TITLES["tu_mi"] in title:
+            return
+        _, found_pid = win32process.GetWindowThreadProcessId(hwnd)
+        if found_pid == pid:
+            popups.append((hwnd, title))
+
+    win32gui.EnumWindows(_enum_handler, None)
+    return popups
+
+
+def _popup_buttons_for(title):
+    """按标题挑该弹框应该点的按钮候选：命中overrides用它的，否则用默认的一组"""
+    for rule in POPUP.get("overrides") or []:
+        if re.search(rule["title_re"], title):
+            return rule["buttons"]
+    return POPUP["buttons"]
+
+
+def _popup_message(dlg):
+    """尽量读出弹框正文，只用于日志——遇到没见过的弹框时，光有标题（往往就俩字"错误"）
+    根本认不出是什么，正文才说得清"""
+    try:
+        texts = [t.strip() for t in dlg.children_texts() if t and t.strip()]
+        return " / ".join(texts[:4])
+    except Exception:
+        return ""
+
+
+def _dismiss_one_popup(hwnd, title):
+    """关掉单个弹框，返回是否关掉了"""
+    buttons = _popup_buttons_for(title)
+    message = ""
+    try:
+        app = Application(backend="uia").connect(handle=hwnd)
+        dlg = app.window(handle=hwnd)
+        message = _popup_message(dlg)
+        for button in buttons:
+            try:
+                dlg.child_window(title=button, control_type="Button").click()
+                logger.warning("已关闭荼蘼弹框「%s」（点击\"%s\"）：%s", title, button, message)
+                return True
+            except Exception:
+                continue
+        logger.warning("荼蘼弹框「%s」上找不到%s中的任何按钮：%s", title, buttons, message)
+    except Exception as e:
+        logger.warning("连接荼蘼弹框「%s」失败: %s", title, e)
+
+    if not POPUP.get("close_if_no_button", True):
+        return False
+    # 兜底：直接发关闭消息。对是/否这类对话框，Windows本来就把标题栏的X置灰、WM_CLOSE不生效，
+    # 所以这条兜底不会替我们误答"是"，最坏情况就是没关掉、下一轮再试
+    try:
+        win32gui.PostMessage(hwnd, win32con.WM_CLOSE, 0, 0)
+        time.sleep(TIMEOUTS["poll_interval"])
+        if not win32gui.IsWindow(hwnd) or not win32gui.IsWindowVisible(hwnd):
+            logger.warning("已用WM_CLOSE关闭荼蘼弹框「%s」：%s", title, message)
+            return True
+        logger.warning("荼蘼弹框「%s」按钮点不到、WM_CLOSE也没关掉，可能需要人工处理：%s", title, message)
+    except Exception as e:
+        logger.warning("向荼蘼弹框「%s」发送WM_CLOSE失败: %s", title, e)
+    return False
+
+
+def dismiss_tu_mi_popups():
+    """关掉荼蘼当前所有弹框，返回是否至少关掉一个。
+
+    弹框都是模态的：只要挂着一个，整个荼蘼就点不动，按坐标的点击会落到弹框上，
+    截图识别到的也是弹框而不是面板——必须在每次操作/识别荼蘼之前先清干净。
+    单次检查、不等待，由调用方（监控轮询、扫描空闲行前、点完"开始"之后）按自己的节奏重复调用；
+    一次点掉所有弹框，避免多个角色同时出问题时堆叠了好几个框。"""
+    pid = find_pid_by_keyword(PROC["tu_mi"])
+    if not pid:
         return False
     dismissed = False
-    for w in windows:
-        try:
-            app = Application(backend="uia").connect(handle=w.handle)
-            dlg = app.window(handle=w.handle)
-            dlg.child_window(title=TITLES["tu_mi_error_popup_button"], control_type="Button").click()
+    for hwnd, title in list_tu_mi_popups(pid):
+        if _dismiss_one_popup(hwnd, title):
             dismissed = True
-        except Exception as e:
-            logger.warning("点击荼蘼异常退出错误弹窗\"确定\"按钮失败: %s", e)
     return dismissed
 
 
@@ -325,7 +404,8 @@ def ensure_script_software_open():
         # 部分电脑系统时区不是"中国北京"时，荼蘼启动过程中会弹出警告框；
         # 按需求点击"否"继续启动软件，不修改系统时区
         dismiss_timezone_warning()
-        bring_window_to_front_by_pid(tu_mi_pid, timeout=DELAYS["software_init"])
+        bring_window_to_front_by_pid(tu_mi_pid, timeout=DELAYS["software_init"],
+                                     title_keyword=TITLES["tu_mi"])
     return tu_mi_pid
 
 def open_script_window():
@@ -344,7 +424,8 @@ def open_script_window():
         wait_image_and_click(IMAGES['tu_mi_logo'], max_retries=RETRIES["tu_mi_logo"])
         time.sleep(DELAYS["after_tu_mi_logo"])
         if tu_mi_pid:
-            bring_window_to_front_by_pid(tu_mi_pid, timeout=TIMEOUTS["tu_mi_front"])
+            bring_window_to_front_by_pid(tu_mi_pid, timeout=TIMEOUTS["tu_mi_front"],
+                                         title_keyword=TITLES["tu_mi"])
 
     wait_image_and_click(IMAGES['tu_mi_main'])
     pyautogui.click(POINTS["tu_mi_daily_menu"]["x"], POINTS["tu_mi_daily_menu"]["y"])
@@ -620,18 +701,21 @@ def bring_tu_mi_to_front():
     if not pid:
         logger.warning("未找到荼蘼进程，无法在操作前置前荼蘼窗口")
         return False
-    ok = bring_window_to_front_by_pid(pid, timeout=TIMEOUTS["tu_mi_front"])
+    ok = bring_window_to_front_by_pid(pid, timeout=TIMEOUTS["tu_mi_front"],
+                                      title_keyword=TITLES["tu_mi"])
     if not ok:
         logger.warning("操作荼蘼前置前窗口失败（pid=%s），后续点击可能落到别的窗口上", pid)
     return ok
 
 
 def find_tu_mi_hwnd():
-    """定位当前唯一一个荼蘼实例的窗口hwnd，找不到返回None"""
+    """定位当前唯一一个荼蘼实例的主窗口hwnd，找不到返回None。
+    按标题筛，不能只按pid拿"第一个可见窗口"：荼蘼弹出模态框时那个框也是本进程的可见窗口"""
     pid = find_pid_by_keyword(PROC["tu_mi"])
     if not pid:
         return None
-    return find_visible_hwnd_by_pid(pid, timeout=TIMEOUTS["find_tu_mi_window"])
+    return find_visible_hwnd_by_pid(pid, timeout=TIMEOUTS["find_tu_mi_window"],
+                                    title_keyword=TITLES["tu_mi"])
 
 
 def snapshot_clx_windows():
@@ -778,6 +862,9 @@ def _register_script_once(role, row_index):
     points = POINTS
     images = IMAGES
 
+    # 荼蘼的弹框是模态的，挂着一个后面所有点击都会落到弹框上（或者干脆被吞掉），
+    # 所以整段操作开始之前先把弹框清干净，再置前
+    dismiss_tu_mi_popups()
     # 先把荼蘼从游戏窗口后面拉到最前，否则下面这些按坐标的点击会全部落到盖在上面的游戏客户端上
     bring_tu_mi_to_front()
     time.sleep(DELAYS["after_page_switch"])
@@ -806,6 +893,13 @@ def _register_script_once(role, row_index):
     y = points['script_run_base']['y'] + interval
     pyautogui.click(x, y)
     logger.info("于 x=%d，y=%d 处点击运行脚本", x, y)
+
+    # 点"开始"是最容易弹框的一步（典型的是"此窗口已存在于中控，请直接选择对应窗口开始！"，
+    # 意思是这一次的开始没生效）。弹框先关掉，再把这次尝试判失败让外层重做整段——
+    # 重做的第一步正好是点刷新，也就是弹框自己给出的处理办法，而且不用重新登录角色
+    time.sleep(DELAYS["after_page_switch"])
+    if dismiss_tu_mi_popups():
+        raise RuntimeError("点击\"开始\"后荼蘼弹出了对话框，本次开始未生效（详见上一条弹框日志）")
 
 
 def close_window_with_pywinauto(title, index):
@@ -881,12 +975,12 @@ def main():
     state_store.save(datetime.date.today(), queue_state.snapshot())
 
     monitor = TuMiMonitor(config, queue_state, state_store, find_tu_mi_hwnd, kill_process_tree,
-                           dismiss_error_popup_fn=dismiss_tu_mi_error_popup)
+                           dismiss_popups_fn=dismiss_tu_mi_popups)
     monitor.start()
 
     scheduler = Scheduler(config, queue_state, role_lookup, setup_role_for_queue,
                            find_tu_mi_hwnd, kill_process_tree,
-                           dismiss_error_popup_fn=dismiss_tu_mi_error_popup,
+                           dismiss_popups_fn=dismiss_tu_mi_popups,
                            bring_tu_mi_to_front_fn=bring_tu_mi_to_front)
     try:
         scheduler.run_until_all_finished()
