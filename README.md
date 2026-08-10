@@ -327,6 +327,8 @@ pip install -r requirements.txt
    - 在弹出的定格画面上，**按住鼠标左键拖动**，框住这个账号那一条，松开
    - 回到黑窗口，确认这张图可以就回车
 
+   > **渠道服账号截的不是这个界面**：渠道服要框的是 idv-login 弹出的**账号管理页面**（"选择登录身份"那一页）里、这个账号所在行的**账号栏**（昵称 + 账号 ID）。程序靠这张图认出"哪一行是这个账号"，再去点**同一行**行尾的「登录」按钮，所以**别把行尾的登录按钮一起框进去**。倒计时期间把那个 Chrome 窗口切到前面即可。
+
 **④ 截取角色图片**：同样的方法，框住角色列表里这个角色那一条（带等级和名字的，比如"170级 帅气花岗岩"）。
 
 **⑤ 选脚本图片**：会列出已有的脚本图片，如果这个角色跑的方案和别人一样，直接输编号复用；不一样就输 `0`，然后用同样的「回车 → 倒计时期间展开荼蘼方案下拉列表 → 拖拽框选」方式截一张。
@@ -471,7 +473,7 @@ pip install -r requirements.txt
 | 1 | 重新截账号图片（登录时找不到账号了就重截） |
 | 2 | 重新截角色图片（角色升级了、改名了要重截） |
 | 3 | 换脚本图片（想让这个角色跑别的方案） |
-| 4 | 切换官服 / 渠道服 |
+| 4 | 切换官服 / 渠道服（两种账号的账号图片取自不同界面，切完会问你要不要马上重截） |
 | 5 | **启用 / 停用**（停用后这个角色就不跑了，最常用） |
 
 改完输 `0` 保存。每次保存前都会让你确认，而且会自动备份原来的配置。
@@ -603,6 +605,7 @@ queue_settings:
 1. 检查 `config.yaml` 里 `idv_login_path` 路径对不对。
 2. 运行时会弹**管理员权限确认框**，要点"是"。
 3. 检查 `titles` 里 `idv_channel_account` 的窗口标题和你电脑上实际的是否一致。
+4. 日志里出现「未找到角色 xxx 对应的登录按钮」，说明账号管理页面上没认出这个账号那一行：多半是账号图片截得不对（框到了行尾的登录按钮、或者页面改版了），用[角色管理助手](#添加或修改角色)的选项 `1` 重截一张。日志会打印"页面上共 N 个登录按钮，其中 M 个与该行对齐"，`N=0` 是 `res/channel_login.png` 这张按钮图对不上（页面换皮肤/换分辨率了），`N>0 而 M=0` 才是账号那一行没找对。
 
 ### 日志文件用记事本打开是乱码
 
@@ -656,7 +659,7 @@ queue_settings:
 | 字段 | 必填 | 说明 |
 | --- | --- | --- |
 | `name` | 是 | 角色名，蛇形命名，也是图片文件名前缀 |
-| `account_image` | 官服必填 | 账号下拉列表中该账号的截图 |
+| `account_image` | 是 | 该账号的截图。官服取自登录界面的账号下拉列表；渠道服取自 idv-login 账号管理页面上该账号那一行的账号栏（用来定位"哪一行是它"，再点同一行的登录按钮） |
 | `login_role_image` | 是 | 角色列表中该角色的截图 |
 | `script_image` | 是 | 荼蘼方案列表中该方案的截图，可多角色共用 |
 | `channel_account` | 否 | `true` 表示渠道服账号，走 idv-login；默认 `false` |
@@ -670,10 +673,10 @@ queue_settings:
 | --- | --- |
 | `points` | 固定点击坐标（绝对屏幕像素）：`select_role`、`tu_mi_daily_menu`、`script_choose_base` / `script_run_base`（荼蘼第 1 行，其余行按 `monitor_settings.row.height` 推算）、`script_dropdown_offset_y` |
 | `regions` | 图像搜索范围，格式为 `left / top / width / height`（**不是四个角坐标**）：`account_list` 账号下拉列表、`script_list` 方案下拉列表（`top` 由程序按行号算，不用配） |
-| `images` | 通用界面元素的图像模板路径，共 12 张：`init_known` / `other_account` / `logo` / `an_login` / `login_enter_game` / `role_enter_game` / `account_selection` / `dream_server` / `dream_checkbox` / `tu_mi_logo` / `tu_mi_main` / `tu_mi_refresh`。其中 `tu_mi_logo`（托盘图标）只在**兜底路径**用：启动时优先按 pid + 窗口标题直接把荼蘼主窗口唤出来（最小化到托盘的窗口是被 `SW_HIDE` 藏起来的，句柄一直在，`SW_SHOW` 就能请回来），找不到窗口才退回去认托盘图标 |
-| `image_match` | `confidence` 匹配相似度阈值、`retry_interval_sec` 找图失败后的重试间隔、`default_max_retries` 默认重试上限 |
-| `retries` | 各步骤单独的找图重试次数上限（`other_account` / `logo` / `an_login` / `account_selection` / `login_enter_game` / `dream_checkbox` / `role_enter_game` / `tu_mi_refresh`） |
-| `account_list_scroll` | 账号列表用方向键逐条翻找的参数：`first_press_count` 首轮按键数、`next_press_min` / `next_press_max` 之后每轮的随机步长、`max_attempts` 最大轮数、`channel_pagedown_count` 渠道服账号先整页翻几次 |
+| `images` | 通用界面元素的图像模板路径，共 12 张：`init_known` / `other_account` / `logo` / `channel_login`（渠道服账号管理页面里每行行尾的「登录」按钮，所有渠道服账号共用） / `login_enter_game` / `role_enter_game` / `account_selection` / `dream_server` / `dream_checkbox` / `tu_mi_logo` / `tu_mi_main` / `tu_mi_refresh`。其中 `tu_mi_logo`（托盘图标）只在**兜底路径**用：启动时优先按 pid + 窗口标题直接把荼蘼主窗口唤出来（最小化到托盘的窗口是被 `SW_HIDE` 藏起来的，句柄一直在，`SW_SHOW` 就能请回来），找不到窗口才退回去认托盘图标 |
+| `image_match` | `confidence` 匹配相似度阈值、`retry_interval_sec` 找图失败后的重试间隔、`default_max_retries` 默认重试上限、`row_align_tolerance_px` 行内配对（按账号图片找同一行的按钮）允许的纵向偏差，必须远小于列表行高 |
+| `retries` | 各步骤单独的重试次数上限（`other_account` / `logo` / `channel_login`（渠道服账号管理页面最多往下翻几页找账号那一行） / `account_selection` / `login_enter_game` / `dream_checkbox` / `role_enter_game` / `tu_mi_refresh`） |
+| `account_list_scroll` | 账号列表用方向键逐条翻找的参数：`first_press_count` 首轮按键数、`next_press_min` / `next_press_max` 之后每轮的随机步长、`max_attempts` 最大轮数、`channel_pagedown_count` 仅兼容分支用（渠道服角色没配账号图片时先盲翻几页） |
 | `role_list_scroll` | 角色列表滚轮翻页：`point` 滚动时鼠标位置（必须落在列表内，滚轮只对光标下的控件生效）、`clicks` 每次滚动格数（负数向下，建议略小于一屏以保证重叠）、`max_scrolls` 单轮最大滚动次数、`max_rounds` 重新展开+回顶重试的轮数、`open_wait_sec` 点开下拉框后等列表渲染的秒数、`open_offset` 展开后把鼠标从下拉框上挪开的偏移（默认向右上 10px，避免光标盖住列表项） |
 | `delays` | 11 项等待时长：`global`（即 `pyautogui.PAUSE`）、`software_init`、`after_game_launch`、`relogin_wait`（关掉残留游戏窗口后的等待，默认 1800）等 |
 | `timeouts` | 9 项超时：`find_window` / `bring_to_front` / `wait_process` / `new_game_window` / `kill_process` / `poll_interval` 等 |

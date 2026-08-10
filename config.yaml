@@ -92,6 +92,7 @@ roles:
     enable: true
 
   - name: "an_an"
+    account_image: "res/an_an_account.png"        # 账号图片（渠道服：账号管理页面里这个账号那一行的账号栏）
     login_role_image: "res/an_role_login.png"     # 登录页面角色选择图片
     script_image: "res/an_script_item.png"        # 角色要挂的脚本图片
     channel_account: true                          # 渠道服账号，需借助idv-login辅助登录，不能直接登录
@@ -132,7 +133,7 @@ global_settings:
     init_known: "res/init_known.png"
     other_account: "res/other_account.png"
     logo: "res/logo.png"
-    an_login: "res/an_account_login.png"
+    channel_login: "res/channel_login.png"   # 渠道服账号管理页面里每行行尾的"登录"按钮（所有渠道服账号共用同一张）
     login_enter_game: "res/login_enter_game.png"
     role_enter_game: "res/role_enter_game.png"
     account_selection: "res/account_selection.png"
@@ -147,12 +148,14 @@ global_settings:
     confidence: 0.8               # 图像匹配相似度阈值（0~1），调低更宽松但容易误匹配
     retry_interval_sec: 5         # 每次没找到图片后，等多久再重试
     default_max_retries: 200      # 找图的默认重试次数上限（未单独指定时用这个）
+    row_align_tolerance_px: 15    # 行内配对（按账号图片找同一行的按钮）时，允许按钮中心超出账号图片
+                                  # 纵向范围多少像素。必须远小于列表的行高，否则会把相邻行的按钮认成同一行
 
   # 各步骤找图的重试次数上限，超过即判定该步骤失败
   retries:
     other_account: 10             # 渠道服登录：切换到"其他账号"
     logo: 10                      # 渠道服登录：点击游戏logo
-    an_login: 5                   # 渠道服登录：点击渠道服账号
+    channel_login: 5              # 渠道服登录：在账号管理页面里最多往下翻几页找该账号那一行
     account_selection: 5          # 官服登录：展开账号下拉框
     login_enter_game: 5           # 官服登录：点击登录
     dream_checkbox: 1             # 取消勾选梦境私服（没勾选时本来就找不到，1次即可）
@@ -169,7 +172,7 @@ global_settings:
     next_press_min: 1             # 之后每轮随机按 min~max 次，避免固定步长永远错过某一条
     next_press_max: 3
     max_attempts: 20              # 最多找多少轮，超过判定找不到该账号
-    channel_pagedown_count: 2     # 渠道服账号排在列表靠后，先整页往下翻几次再找
+    channel_pagedown_count: 2     # 仅用于兼容分支：渠道服角色没配账号图片时，先盲翻几页再点登录按钮
 
   # 登录页角色列表滚动查找设置
   # 账号下的角色较多时，要选的角色不会全部显示在首屏，需要向下滚动翻页才能找到

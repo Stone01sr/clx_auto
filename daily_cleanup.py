@@ -527,6 +527,90 @@ def wait_image_and_click(image_path, region=None, max_retries=MATCH["default_max
                 raise Exception("can not find image: %s after %d retries", image_path, retries)
             logger.info("未找到图片: %s，继续寻找...", image_path)
 
+def _dedupe_boxes(boxes):
+    """模板匹配同一个控件时通常会命中一小簇几乎重合的框（彼此只差一两个像素），
+    按中心点距离去重，每一簇只留第一个。不去重的话"页面上有几个按钮"根本没法数，
+    日志里也会刷出十几个看着像不同按钮、其实是同一个的坐标。"""
+    kept = []
+    for box in boxes:
+        center_x, center_y = box.left + box.width / 2, box.top + box.height / 2
+        if any(abs(center_x - (k.left + k.width / 2)) < k.width / 2 and
+               abs(center_y - (k.top + k.height / 2)) < k.height / 2 for k in kept):
+            continue
+        kept.append(box)
+    return kept
+
+
+def locate_row_button(row_image, button_image, confidence=MATCH["confidence"]):
+    """在"一行一条记录、左边是标识右边是操作按钮"的列表里，找出row_image所在那一行的
+    按钮中心坐标，行没找到或那一行上没有按钮都返回None。
+
+    渠道服账号管理页面就是这种列表：一个账号一行，行尾是"登录"按钮。原来的做法是
+    "在屏幕上找到登录按钮就点"，只有一个渠道服账号时碰巧总是对的，页面上一旦多出一个账号
+    就会登错人。这里改成先按账号图片定位到行，再在同一行里挑按钮：按钮和账号在纵向上必然
+    居中对齐，横向上按钮在账号右侧——只靠这两个位置关系配对，不写死任何像素偏移，
+    所以窗口大小、是否全屏、页面滚到第几屏都不影响。
+
+    两次查找共用同一张截图：分别截两次的话，中间页面要是滚动了一下，
+    就会拿A屏的行去配B屏的按钮，配出来的坐标是错的。"""
+    screen = pyautogui.screenshot()
+    try:
+        row_box = pyautogui.locate(row_image, screen, confidence=confidence)
+    except pyautogui.ImageNotFoundException:
+        return None
+    try:
+        buttons = _dedupe_boxes(pyautogui.locateAll(button_image, screen, confidence=confidence))
+    except pyautogui.ImageNotFoundException:
+        buttons = []
+
+    # 按钮中心落在"行图片的纵向范围±容差"之内就算同一行。容差要远小于行高：
+    # 大了会把相邻行的按钮认进来（那才是真正会登错账号的情况），小了则容不下
+    # 截图时上下多框/少框的那几个像素
+    tolerance = MATCH["row_align_tolerance_px"]
+    top = row_box.top - tolerance
+    bottom = row_box.top + row_box.height + tolerance
+    same_row = [b for b in buttons
+                if top <= b.top + b.height / 2 <= bottom and b.left >= row_box.left]
+    logger.info("已定位到图片 %s 所在的行（top=%s, height=%s），页面上共%d个 %s 按钮，其中%d个与该行对齐",
+                row_image, row_box.top, row_box.height, len(buttons), button_image, len(same_row))
+    if not same_row:
+        return None
+    # 同一行里可能还有别的按钮，取最靠近行标识的那个
+    return pyautogui.center(min(same_row, key=lambda b: b.left))
+
+
+def click_channel_account_login(role):
+    """在渠道服账号管理页面里点该角色对应账号那一行的"登录"按钮，找不到抛异常。
+
+    账号不在首屏时逐页往下翻着找。这个页面是idv-login弹出的Chrome窗口，翻页用PageDown。"""
+    account_image = role.get("account_image")
+    login_image = IMAGES["channel_login"]
+    max_pagedowns = RETRIES["channel_login"]
+
+    if not account_image:
+        # 兼容还没配账号图片的老配置：退回"看见登录按钮就点"，页面上只有一个账号时结果一样
+        logger.warning("角色 %s 未配置渠道服账号图片，退回直接点击页面上的登录按钮"
+                       "（页面上有多个账号时会登错账号，建议用角色管理助手补截一张）", role["name"])
+        for _ in range(G["account_list_scroll"]["channel_pagedown_count"]):
+            pyautogui.press('pagedown')
+        wait_image_and_click(login_image, max_retries=max_pagedowns)
+        return
+
+    for page in range(max_pagedowns + 1):   # 第0次先在当前可见范围找，之后每翻一页找一次
+        pos = locate_row_button(account_image, login_image)
+        if pos:
+            pyautogui.click(pos)
+            logger.info("已点击角色 %s 在渠道服账号管理页面所在行的登录按钮，坐标: %s", role["name"], pos)
+            return
+        if page < max_pagedowns:
+            logger.info("渠道服账号管理页面第%d屏未找到角色 %s 对应的登录按钮（账号图片: %s），"
+                        "向下翻一页继续找", page + 1, role["name"], account_image)
+            pyautogui.press('pagedown')
+            time.sleep(DELAYS["after_page_switch"])
+    raise Exception(f"在渠道服账号管理页面翻找{max_pagedowns + 1}屏，"
+                    f"仍未找到角色 {role['name']} 对应的登录按钮")
+
+
 def scroll_list_and_locate(image_path, scroll_cfg, confidence=MATCH["confidence"]):
     """从当前位置开始，在一个可滚动列表里逐屏向下查找图片。
     找到返回中心坐标；一直滚到底仍找不到返回None。
@@ -647,14 +731,11 @@ def open_clx_and_login(role, ctx):
         wait_image_and_click(IMAGES['other_account'], max_retries=RETRIES["other_account"])
         wait_image_and_click(IMAGES['logo'], max_retries=RETRIES["logo"])
         time.sleep(DELAYS["after_page_switch"])
-        # 渠道服账号排在账号列表靠后的位置，先整页往下翻几次再找
-        for _ in range(G["account_list_scroll"]["channel_pagedown_count"]):
-            pyautogui.press('pagedown')
-        wait_image_and_click(IMAGES['an_login'], max_retries=RETRIES["an_login"])
+        click_channel_account_login(role)
         idv_channel_title = TITLES["idv_channel_account"]
-        an_login_windows = pwc.getWindowsWithTitle(idv_channel_title)
-        if len(an_login_windows) > 0:
-            an_login_windows[0].minimize()
+        channel_windows = pwc.getWindowsWithTitle(idv_channel_title)
+        if len(channel_windows) > 0:
+            channel_windows[0].minimize()
         time.sleep(DELAYS["after_channel_login"])
         # 渠道服账号登录完成，关闭idv-login，官服账号不依赖该进程，不受影响
         if ctx.idv_pid:

@@ -404,10 +404,19 @@ def replace_role_in_config(role_name, entry_text):
     return _write_config_lines(lines)
 
 
-def capture_account_image(role_name):
-    """截取账号图片，成功返回配置里要写的相对路径，取消返回None"""
+def capture_account_image(role_name, channel_account=False):
+    """截取账号图片，成功返回配置里要写的相对路径，取消返回None。
+
+    官服和渠道服都要这张图，只是取自不同的界面：官服是游戏登录界面的账号下拉列表，
+    渠道服是 idv-login 弹出的账号管理页面。渠道服那个页面一个账号一行、行尾各有一个"登录"
+    按钮，程序靠这张图认出"哪一行是这个账号"，再点同一行的登录按钮，所以只框账号那一栏，
+    千万别把行尾的登录按钮一起框进去。"""
     save_path = os.path.join(RES_DIR, f"{role_name}_account.png")
-    if capture_with_retry("请框选登录界面账号下拉列表中该角色的账号条目", save_path, "账号图片"):
+    if channel_account:
+        hint = "请框选渠道服账号管理页面中该账号那一行的账号栏（昵称+账号ID，不要框到行尾的登录按钮）"
+    else:
+        hint = "请框选登录界面账号下拉列表中该角色的账号条目"
+    if capture_with_retry(hint, save_path, "账号图片"):
         return f"res/{role_name}_account.png"
     return None
 
@@ -444,15 +453,12 @@ def add_role_flow(config):
 
     os.makedirs(RES_DIR, exist_ok=True)
 
-    # 渠道服账号走idv-login登录，不经过账号下拉框，因此不需要账号图片
-    account_image = None
     if channel_account:
-        print("\n渠道服账号通过 idv-login 登录，不需要账号图片，跳过该步骤")
-    else:
-        account_image = capture_account_image(role_name)
-        if not account_image:
-            print("\n已取消（账号图片是官服角色登录的必需材料），未修改任何配置")
-            return
+        print("\n渠道服账号通过 idv-login 登录，账号图片请到 idv-login 弹出的账号管理页面上截取")
+    account_image = capture_account_image(role_name, channel_account)
+    if not account_image:
+        print("\n已取消（账号图片是角色登录的必需材料），未修改任何配置")
+        return
 
     login_role_image = capture_login_role_image(role_name)
     if not login_role_image:
@@ -519,13 +525,13 @@ def edit_role_flow(config):
     while True:
         print("\n" + "-" * 60)
         print(f"正在修改角色: {role_name}{'   (有未保存的改动)' if dirty else ''}")
-        print(f"    账号图片:  {account_image or '（渠道服账号，不需要）'}")
+        print(f"    账号图片:  {account_image or '（未配置）'}")
         print(f"    角色图片:  {login_role_image}")
         print(f"    脚本图片:  {script_image}")
         print(f"    渠道服:    {'是' if channel_account else '否'}")
         print(f"    启用:      {'是' if enable else '否'}")
         print("-" * 60)
-        print("  1. 重新截取账号图片" + ("（渠道服账号不需要）" if channel_account else ""))
+        print("  1. 重新截取账号图片" + ("（渠道服：截自账号管理页面）" if channel_account else ""))
         print("  2. 重新截取角色图片")
         print("  3. 更换脚本图片")
         print(f"  4. 切换渠道服标记（当前: {'是' if channel_account else '否'}）")
@@ -536,17 +542,14 @@ def edit_role_flow(config):
         choice = ask("请选择", default="0").lower()
 
         if choice == "1":
-            if channel_account:
-                print("  渠道服账号通过 idv-login 登录，不使用账号图片，无需截取")
-                continue
             # 重截会覆盖同名旧文件，所以先临时挪开，让capture_with_retry不走"复用已有"分支
             path = os.path.join(RES_DIR, f"{role_name}_account.png")
-            new_image = _recapture(path, capture_account_image, role_name)
+            new_image = _recapture(path, lambda: capture_account_image(role_name, channel_account))
             if new_image:
                 account_image, dirty = new_image, True
         elif choice == "2":
             path = os.path.join(RES_DIR, f"{role_name}_role_login.png")
-            new_image = _recapture(path, capture_login_role_image, role_name)
+            new_image = _recapture(path, lambda: capture_login_role_image(role_name))
             if new_image:
                 login_role_image, dirty = new_image, True
         elif choice == "3":
@@ -556,14 +559,15 @@ def edit_role_flow(config):
         elif choice == "4":
             channel_account = not channel_account
             dirty = True
-            if channel_account:
-                print("  已标记为渠道服账号；账号图片对渠道服无效，保存时会从配置中移除")
-                account_image = None
-            else:
-                print("  已改回官服账号，需要账号图片才能登录")
-                if not account_image:
-                    if ask_yes_no("  现在截取账号图片吗？", default=True):
-                        account_image = capture_account_image(role_name)
+            # 两种账号都要账号图片，但取自不同界面（渠道服是账号管理页面，官服是登录界面的账号下拉列表），
+            # 切换标记后原来那张就认不出对应的行/条目了，必须重截
+            where = "idv-login 的账号管理页面" if channel_account else "游戏登录界面的账号下拉列表"
+            print(f"  已切换为{'渠道服' if channel_account else '官服'}账号，账号图片要改成截自{where}")
+            if ask_yes_no("  现在重新截取账号图片吗？", default=True):
+                path = os.path.join(RES_DIR, f"{role_name}_account.png")
+                new_image = _recapture(path, lambda: capture_account_image(role_name, channel_account))
+                if new_image:
+                    account_image = new_image
         elif choice == "5":
             enable = not enable
             dirty = True
@@ -577,8 +581,8 @@ def edit_role_flow(config):
         else:
             print("  无效的选项")
 
-    if not channel_account and not account_image:
-        print("\n官服角色必须有账号图片，无法保存。config.yaml 未被修改")
+    if not account_image:
+        print("\n角色必须有账号图片，无法保存。config.yaml 未被修改")
         return
     if not dirty:
         print("\n没有任何改动，config.yaml 未被修改")
@@ -599,16 +603,17 @@ def edit_role_flow(config):
           f"{os.path.basename(backup_path)}）")
 
 
-def _recapture(existing_path, capture_fn, role_name):
+def _recapture(existing_path, capture_fn):
     """重新截取会覆盖同名旧文件。capture_with_retry遇到已存在的文件会先问"是否复用"，
     但这里用户明确就是要重截，所以先把旧文件临时改名避开那个分支；
-    截取成功就删掉旧文件，取消或失败则把旧文件恢复回来。"""
+    截取成功就删掉旧文件，取消或失败则把旧文件恢复回来。
+    capture_fn是不带参数的可调用对象（参数由调用方用lambda闭进去）。"""
     backup = None
     if os.path.isfile(existing_path):
         backup = existing_path + ".prev"
         os.replace(existing_path, backup)
     try:
-        result = capture_fn(role_name)
+        result = capture_fn()
     except Exception:
         if backup:
             os.replace(backup, existing_path)
