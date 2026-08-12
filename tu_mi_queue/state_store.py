@@ -12,10 +12,14 @@ logger = logging.getLogger(__name__)
 class StateStore:
     """每日队列运行状态的JSON持久化 + 截图留存 + 过期数据清理"""
 
-    def __init__(self, storage_settings, base_dir="."):
+    def __init__(self, storage_settings, base_dir=".", role_order=None):
+        """role_order 传 config.yaml 里的完整角色顺序，落盘时按它排序。
+        重跑只跑几个角色时，队列里只有这几个，没有它就没法把记录排回原来的顺序。"""
         self.state_dir = os.path.join(base_dir, storage_settings["state_dir"])
         self.screenshot_dir = os.path.join(base_dir, storage_settings["screenshot_dir"])
+        self.lock_path = os.path.join(base_dir, storage_settings["lock_file"])
         self.retention_days = storage_settings["retention_days"]
+        self.role_order = list(role_order or [])
         os.makedirs(self.state_dir, exist_ok=True)
         os.makedirs(self.screenshot_dir, exist_ok=True)
 
@@ -23,16 +27,31 @@ class StateStore:
         return os.path.join(self.state_dir, f"{date:%Y-%m-%d}.json")
 
     def save(self, date: datetime.date, tasks):
-        """把当天所有角色任务的最新状态整体落盘"""
+        """把角色任务的最新状态落盘，按角色名合并进当天已有的记录里。
+
+        必须合并而不能整份覆盖：重跑时队列里只有被选中的那几个角色，直接覆盖会把当天
+        其他角色的记录连同历史一起抹掉，查看页面上就只剩重跑的这几个了。
+        """
+        merged = {t.role_name: t for t in (self.load(date) or [])}
+        for task in tasks:
+            merged[task.role_name] = task
         payload = {
             "date": f"{date:%Y-%m-%d}",
-            "tasks": [t.to_dict() for t in tasks],
+            "tasks": [merged[name].to_dict() for name in self._ordered_names(merged)],
         }
         path = self._state_path(date)
         tmp_path = path + ".tmp"
         with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
         os.replace(tmp_path, path)
+
+    def _ordered_names(self, merged):
+        """按 config.yaml 的角色顺序排，剩下的（已经从配置里删掉或停用、但当天有记录的）
+        按原文件里的先后顺序缀在后面，不丢记录也不打乱既有排版"""
+        names = [name for name in self.role_order if name in merged]
+        seen = set(names)
+        names.extend(name for name in merged if name not in seen)
+        return names
 
     def load(self, date: datetime.date):
         """读取某天的状态记录，返回RoleTask列表；当天还没有记录则返回None"""

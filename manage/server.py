@@ -95,6 +95,7 @@ class Handler(BaseHTTPRequestHandler):
                 f"<td class='status-{t.status}'>{html.escape(t.status)}</td>"
                 f"<td>{html.escape(t.tu_mi_raw_status or '-')}</td>"
                 f"<td>{t.retry_count}</td>"
+                f"<td>{t.rerun_count}</td>"
                 f"<td>{t.row_index if t.row_index >= 0 else '-'}</td></tr>"
             )
         body = f"""
@@ -102,8 +103,8 @@ class Handler(BaseHTTPRequestHandler):
   查看日期：<select name="date" onchange="this.form.submit()">{date_options}</select>
 </form>
 <table>
-<tr><th>角色</th><th>状态</th><th>荼蘼原始状态</th><th>重试次数</th><th>荼蘼行号</th></tr>
-{rows or '<tr><td colspan="5">当天暂无记录</td></tr>'}
+<tr><th>角色</th><th>状态</th><th>荼蘼原始状态</th><th>自动重试</th><th>人工重跑</th><th>荼蘼行号</th></tr>
+{rows or '<tr><td colspan="6">当天暂无记录</td></tr>'}
 </table>
 """
         self._send_html(render_page(f"脚本运行队列 - {date_str}", body))
@@ -126,7 +127,7 @@ class Handler(BaseHTTPRequestHandler):
             )
         body = f"""
 <p><a href="/?date={date_str}">&larr; 返回{html.escape(date_str)}列表</a></p>
-<p>当前状态：<b>{html.escape(task.status)}</b>　荼蘼原始状态：{html.escape(task.tu_mi_raw_status or '-')}　重试次数：{task.retry_count}</p>
+<p>当前状态：<b>{html.escape(task.status)}</b>　荼蘼原始状态：{html.escape(task.tu_mi_raw_status or '-')}　自动重试：{task.retry_count} 次　人工重跑：{task.rerun_count} 次</p>
 <table>
 <tr><th>时间</th><th>状态变化</th><th>荼蘼原始状态</th><th>截图</th></tr>
 {rows or '<tr><td colspan="4">暂无状态变迁记录</td></tr>'}

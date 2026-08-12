@@ -60,7 +60,8 @@ class RoleTask:
     row_index: int = -1              # 该任务当前占用的荼蘼行号，未分配为-1
     window_pid: int = None           # 对应的游戏客户端进程pid，便于精确关窗口
     pending_started_at: str = None   # 进入待运行状态的时间戳，用于30分钟超时判断
-    retry_count: int = 0
+    retry_count: int = 0             # 程序自动重试次数（超时/异常退出触发），达上限判失败
+    rerun_count: int = 0             # 人工重跑次数，和自动重试分开计数，方便在查看页面上区分
     history: list = field(default_factory=list)
 
     def transition(self, new_status: TaskStatus, tu_mi_raw_status: str = "", screenshot_path: str = ""):
@@ -77,6 +78,21 @@ class RoleTask:
         if tu_mi_raw_status:
             self.tu_mi_raw_status = tu_mi_raw_status
 
+    def reset_for_rerun(self):
+        """把当天已经跑过的任务放回"排队中"，供人工重跑用。
+
+        保留 history：查看页面上要能连着看到"失败→重跑→完成"的完整链路，而不是从头一份新记录。
+        retry_count 必须归零，否则上一轮攒下的重试次数会让这次一失败就直接判死。
+        本来就还在排队中的任务（上一轮没跑到就中断了）不算一次重跑，不计数也不记一条状态变迁。
+        """
+        if self.status != TaskStatus.QUEUED.value:
+            self.rerun_count += 1
+            self.transition(TaskStatus.QUEUED)
+        self.row_index = -1
+        self.window_pid = None
+        self.pending_started_at = None
+        self.retry_count = 0
+
     def to_dict(self):
         return {
             "role_name": self.role_name,
@@ -86,6 +102,7 @@ class RoleTask:
             "window_pid": self.window_pid,
             "pending_started_at": self.pending_started_at,
             "retry_count": self.retry_count,
+            "rerun_count": self.rerun_count,
             "history": [h.to_dict() for h in self.history],
         }
 
@@ -99,6 +116,7 @@ class RoleTask:
             window_pid=d.get("window_pid"),
             pending_started_at=d.get("pending_started_at"),
             retry_count=d.get("retry_count", 0),
+            rerun_count=d.get("rerun_count", 0),
         )
         task.history = [HistoryEntry.from_dict(h) for h in d.get("history", [])]
         return task
@@ -109,11 +127,16 @@ class QueueState:
     用RLock保护——监控线程整体轮询时会先加一次锁，内部再调用requeue/mark_done等方法，
     这些方法自己也要加锁，所以必须用可重入锁，否则同一线程二次加锁会死锁。"""
 
-    def __init__(self, role_names, max_concurrent):
+    def __init__(self, role_names, max_concurrent, existing_tasks=None):
+        """existing_tasks 用于重跑：传入当天已有的 RoleTask（调用方需先 reset_for_rerun 放回排队中），
+        没传或某个角色没有对应记录时，按全新任务处理。"""
         self.lock = threading.RLock()
         self.max_concurrent = max_concurrent
         self.role_order = list(role_names)
-        self.tasks = {name: RoleTask(role_name=name) for name in role_names}
+        existing = {task.role_name: task for task in (existing_tasks or [])}
+        self.tasks = {
+            name: existing.get(name) or RoleTask(role_name=name) for name in role_names
+        }
         self.queue_order = list(role_names)
         self.row_map = {}
 

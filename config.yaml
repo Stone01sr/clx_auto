@@ -289,3 +289,4 @@ storage_settings:
   state_dir: "state"            # 每日状态JSON文件存放目录
   screenshot_dir: "screenshots" # 每轮监控截图存放目录
   retention_days: 30            # 数据保留天数，超过自动清理
+  lock_file: "state/running.lock"  # 单实例进程锁文件，防止两轮挂机同时跑（相对项目根目录的完整路径）

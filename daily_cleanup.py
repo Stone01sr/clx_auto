@@ -1,3 +1,4 @@
+import argparse
 import datetime
 import os
 import re
@@ -16,7 +17,8 @@ import yaml
 import logging
 from pywinauto import Application, findwindows
 
-from tu_mi_queue.models import QueueState, TaskStatus
+from tu_mi_queue.models import QueueState, RoleTask, TaskStatus
+from tu_mi_queue.process_lock import AlreadyRunningError, ProcessLock
 from tu_mi_queue.state_store import StateStore
 from tu_mi_queue.monitor import TuMiMonitor
 from tu_mi_queue.scheduler import Scheduler
@@ -1037,8 +1039,73 @@ def close_clx_windows_and_wait():
     else:
         logger.info("当前没有打开的一梦江湖")
 
-def main():
+def select_roles(all_roles, roles_arg):
+    """把 --roles 传进来的角色名解析成角色配置列表；不传则返回全部启用角色。
+    名字对不上直接报错退出，不静默跳过——手滑打错一个字母就少跑一个角色，而且不会有任何提示。"""
+    if not roles_arg:
+        return all_roles
+    wanted = [name.strip() for name in roles_arg.split(",") if name.strip()]
+    if not wanted:
+        raise SystemExit("--roles 没有给出任何角色名")
+
+    lookup = {role["name"]: role for role in all_roles}
+    unknown = [name for name in wanted if name not in lookup]
+    if unknown:
+        raise SystemExit("以下角色不在 config.yaml 的启用角色列表里: %s\n可选角色: %s"
+                         % ("、".join(unknown), "、".join(lookup)))
+
+    selected, seen = [], set()
+    for name in wanted:  # 保持用户给定的顺序，同时去掉重复
+        if name not in seen:
+            seen.add(name)
+            selected.append(lookup[name])
+    return selected
+
+
+def build_tasks(state_store, run_date, role_names):
+    """复用当天已有的任务记录：重跑某个角色时保留它之前的状态变迁历史，
+    查看页面上才能连着看到"失败→重跑→完成"的完整链路，而不是从头开一份新记录。"""
+    prior = {task.role_name: task for task in (state_store.load(run_date) or [])}
+    tasks = []
+    for name in role_names:
+        task = prior.get(name)
+        if task is None:
+            tasks.append(RoleTask(role_name=name))
+            continue
+        previous_status = task.status
+        task.reset_for_rerun()
+        if task.rerun_count:
+            logger.info("角色 %s 当天已经跑过（上次结果: %s），本次是第%d次重跑，保留原有历史记录",
+                        name, previous_status, task.rerun_count)
+        tasks.append(task)
+    return tasks
+
+
+def main(roles_arg=None):
     logger.info("当前配置：%s", config)
+    all_roles = get_roles()
+    selected_roles = select_roles(all_roles, roles_arg)
+
+    state_store = StateStore(config["storage_settings"],
+                             role_order=[role["name"] for role in all_roles])
+    # 拿锁必须在开荼蘼、关一梦江湖窗口之前：这两步是破坏性的，
+    # 真有另一轮在跑的话，等发现冲突时正在挂机的角色已经被关光了
+    lock = ProcessLock(state_store.lock_path)
+    try:
+        lock.acquire()
+    except AlreadyRunningError as e:
+        # run_daily.bat 是无人值守跑的，这条必须是 ERROR 且写清原因，
+        # 否则第二天只能看到"今天啥也没跑"，没有任何线索
+        logger.error("已有一轮挂机正在运行（pid=%s，启动于%s），本次不启动。"
+                     "请等当前这轮全部跑完后再试。", e.pid, e.started_at)
+        return
+    try:
+        run_queue(selected_roles, state_store, is_rerun=bool(roles_arg))
+    finally:
+        lock.release()
+
+
+def run_queue(selected_roles, state_store, is_rerun):
     # 点击延迟
     pyautogui.PAUSE = DELAYS["global"]
     # 打开荼蘼
@@ -1046,14 +1113,16 @@ def main():
     # 确保当前没有打开的糊糊窗口
     close_clx_windows_and_wait()
 
-    all_roles = get_roles()
-    role_lookup = {role["name"]: role for role in all_roles}
-    role_names = [role["name"] for role in all_roles]
+    role_lookup = {role["name"]: role for role in selected_roles}
+    role_names = [role["name"] for role in selected_roles]
+    run_date = datetime.date.today()
+    if is_rerun:
+        logger.info("本次为重跑，只跑指定的%d个角色：%s", len(role_names), "、".join(role_names))
 
-    queue_state = QueueState(role_names, config["queue_settings"]["max_concurrent"])
-    state_store = StateStore(config["storage_settings"])
+    queue_state = QueueState(role_names, config["queue_settings"]["max_concurrent"],
+                             existing_tasks=build_tasks(state_store, run_date, role_names))
     state_store.cleanup_old_data()
-    state_store.save(datetime.date.today(), queue_state.snapshot())
+    state_store.save(run_date, queue_state.snapshot())
 
     monitor = TuMiMonitor(config, queue_state, state_store, find_tu_mi_hwnd, kill_process_tree,
                            dismiss_popups_fn=dismiss_tu_mi_popups)
@@ -1067,14 +1136,19 @@ def main():
         scheduler.run_until_all_finished()
     finally:
         monitor.stop()
-        state_store.save(datetime.date.today(), queue_state.snapshot())
+        state_store.save(run_date, queue_state.snapshot())
 
     tasks = queue_state.snapshot()
     done = [t for t in tasks if t.status == TaskStatus.DONE.value]
     failed = [t for t in tasks if t.status == TaskStatus.FAILED.value]
-    logger.info("当天队列运行结束：完成%d个，失败%d个（失败角色：%s）",
+    logger.info("本轮队列运行结束：完成%d个，失败%d个（失败角色：%s）",
                 len(done), len(failed), [t.role_name for t in failed])
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(
+        description="一梦江湖荼蘼挂机：按队列依次登录角色、注册脚本并监控运行状态")
+    parser.add_argument("--roles",
+                        help="只跑指定的角色（角色名用英文逗号分隔），用于重跑；"
+                             "不传则跑 config.yaml 里所有启用的角色")
+    main(parser.parse_args().roles)

@@ -23,6 +23,8 @@ ACTIONS = {
     "4": ("查看运行状态", "manage/server.py",
           "正在启动查看页面，浏览器会自动打开。\n"
           "看完后回到这个窗口按 Ctrl+C 关闭"),
+    # 重跑的开跑提示由 rerun.py 在选完角色之后自己打印，这里不重复提示
+    "5": ("重跑指定角色", "manage/rerun.py", None),
 }
 
 
@@ -42,6 +44,7 @@ def print_menu():
     print()
     print("  3. 开始挂机")
     print("  4. 查看运行状态")
+    print("  5. 重跑指定角色（只重跑失败的那几个，需等当前这轮跑完）")
     print()
     print("  0. 退出")
     print()
