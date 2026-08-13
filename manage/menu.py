@@ -25,6 +25,7 @@ ACTIONS = {
           "看完后回到这个窗口按 Ctrl+C 关闭"),
     # 重跑的开跑提示由 rerun.py 在选完角色之后自己打印，这里不重复提示
     "5": ("重跑指定角色", "manage/rerun.py", None),
+    "6": ("补传运行记录到网站", "manage/backfill_sync.py", None),
 }
 
 
@@ -45,6 +46,7 @@ def print_menu():
     print("  3. 开始挂机")
     print("  4. 查看运行状态")
     print("  5. 重跑指定角色（只重跑失败的那几个，需等当前这轮跑完）")
+    print("  6. 补传运行记录到网站（那几天没传上去、或改过本地记录时用）")
     print()
     print("  0. 退出")
     print()

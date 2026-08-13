@@ -14,6 +14,7 @@ import unicodedata
 THREAD_TAGS = {
     "MainThread": "主流程",
     "tu-mi-monitor": "监控",
+    "remote-sync": "上报",
 }
 
 # 标签列的显示宽度（按终端列数算，一个中文字符占2列），够放下最长的标签并留一格间距
@@ -23,6 +24,7 @@ _TAG_WIDTH = 8
 _TAG_COLORS = {
     "主流程": "\033[36m",   # 青色
     "监控": "\033[35m",     # 品红
+    "上报": "\033[32m",     # 绿色
 }
 _RESET = "\033[0m"
 _DEFAULT_COLOR = "\033[33m"  # 其他线程（如果以后有）统一黄色

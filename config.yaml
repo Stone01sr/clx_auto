@@ -290,3 +290,16 @@ storage_settings:
   screenshot_dir: "screenshots" # 每轮监控截图存放目录
   retention_days: 30            # 数据保留天数，超过自动清理
   lock_file: "state/running.lock"  # 单实例进程锁文件，防止两轮挂机同时跑（相对项目根目录的完整路径）
+
+# 运行状态上报：把每次落盘的队列状态同步到服务器的「挂机运行情况」页面，
+# 这样人不在这台电脑跟前也能看各角色跑到哪了。全程在后台线程里发，
+# 服务器不通/没配密码都只是页面上看不到，本机挂机不受任何影响。
+remote_sync:
+  enabled: true
+  base_url: "http://1.116.120.176:8000"  # 网站地址，页面在 <base_url>/clx-status
+  token_env: "CLX_SYNC_TOKEN"    # 上报密码从这个环境变量读，值等于服务器的 WRITE_PASSWORD。
+                                 # 密码不写进配置文件（配置文件要进版本库），环境变量为空时自动不上报
+  machine_name: ""               # 页面上显示的机器名，留空自动用本机主机名
+  timeout_sec: 5                 # 单次请求超时，宁可放弃也不能让上报卡住后台线程
+  max_retries: 2                 # 失败重试次数；期间若有更新的快照进来会直接放弃旧的那份
+  retry_backoff_sec: 3           # 每次重试前的等待秒数

@@ -19,6 +19,7 @@ from pywinauto import Application, findwindows
 
 from tu_mi_queue.models import QueueState, RoleTask, TaskStatus
 from tu_mi_queue.process_lock import AlreadyRunningError, ProcessLock
+from tu_mi_queue.remote_sync import RemoteSync
 from tu_mi_queue.state_store import StateStore
 from tu_mi_queue.monitor import TuMiMonitor
 from tu_mi_queue.scheduler import Scheduler
@@ -1099,13 +1100,24 @@ def main(roles_arg=None):
         logger.error("已有一轮挂机正在运行（pid=%s，启动于%s），本次不启动。"
                      "请等当前这轮全部跑完后再试。", e.pid, e.started_at)
         return
+
+    # 上报线程等拿到进程锁之后再起：被并发挡下来的那次根本没跑，不该在服务器页面上留痕迹。
+    # 没配/配错时 from_config 返回 None，全程当作"不上报"，本机挂机流程完全不受影响
+    remote_sync = RemoteSync.from_config(config)
+    state_store.remote_sync = remote_sync
+    # run_date 在这里定死并传下去：一轮挂机可能跨过零点，各处各自取 today() 会写到两个日期里
+    run_date = datetime.date.today()
     try:
-        run_queue(selected_roles, state_store, is_rerun=bool(roles_arg))
+        run_queue(selected_roles, state_store, run_date, is_rerun=bool(roles_arg))
     finally:
+        if remote_sync:
+            # 最后再推一份，把服务器上那台机器标成"本轮已结束"，页面才不会一直显示正在挂机
+            remote_sync.close(f"{run_date:%Y-%m-%d}",
+                              [t.to_dict() for t in state_store.load(run_date) or []])
         lock.release()
 
 
-def run_queue(selected_roles, state_store, is_rerun):
+def run_queue(selected_roles, state_store, run_date, is_rerun):
     # 点击延迟
     pyautogui.PAUSE = DELAYS["global"]
     # 打开荼蘼
@@ -1115,7 +1127,6 @@ def run_queue(selected_roles, state_store, is_rerun):
 
     role_lookup = {role["name"]: role for role in selected_roles}
     role_names = [role["name"] for role in selected_roles]
-    run_date = datetime.date.today()
     if is_rerun:
         logger.info("本次为重跑，只跑指定的%d个角色：%s", len(role_names), "、".join(role_names))
 
