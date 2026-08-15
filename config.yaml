@@ -1,10 +1,10 @@
 # config.yaml
 # 角色配置列表
 roles:
-  - name: "stone"  # 角色名称
-    account_image: "res/stone_account.png"           # 账号图片
-    login_role_image: "res/stone_role_login.png"     # 登录页面角色选择图片
-    script_image: "res/stone_script_item.png"        # 角色要挂的脚本图片
+  - name: "stone"
+    account_image: "res/stone_account.png"          # 账号图片
+    login_role_image: "res/stone_role_login.png"    # 登录页面角色选择图片
+    script_image: "res/stone_script_item.png"       # 角色要挂的脚本图片
     enable: true
 
   - name: "guang"

@@ -1117,9 +1117,34 @@ def main(roles_arg=None):
         lock.release()
 
 
+def configure_failsafe():
+    """把 pyautogui 的"急停角"收窄到只剩左下角一个点。
+
+    pyautogui 在每次鼠标/键盘操作**之前**都会读一次光标位置，只要落在屏幕四个角上就抛
+    FailSafeException 中止——本意是给人留一个"把鼠标甩到角上就能停下失控脚本"的后门，
+    但四个角里有三个对这套无人值守流程来说全是误伤：
+
+    - **左上角 (0, 0) 是误报重灾区**。pyautogui 读坐标用的是 GetCursorPos，而它没有检查
+      这个 win32 调用的返回值：调用失败（锁屏、UAC 安全桌面、切分辨率的一瞬间）时坐标
+      结构体保持全零，于是"读失败"和"光标真在左上角"根本无法区分，一律按急停处理。
+      游戏启动器/客户端创建窗口、切全屏时也常把光标复位到 (0, 0)。
+    - **右边两个角**同样会被游戏窗口把光标顶过去。
+
+    实际表现就是角色跑到一半随机抛 FailSafeException（典型是刚点开启动器、客户端正在
+    建窗口那几秒），一次误报就报废整个登录流程，调度器还要把这个角色重新排队重登一次。
+    只留左下角：脚本自己从不往那里点，人要紧急刹车仍然可以把鼠标甩到左下角。
+    角点按实际屏幕尺寸算，不写死坐标，换分辨率不用改。"""
+    width, height = pyautogui.size()
+    pyautogui.FAILSAFE_POINTS = [(0, height - 1)]
+    logger.info("已将 pyautogui 急停角限定为左下角 (0, %d)（屏幕 %dx%d）："
+                "其余三个角误报太多，把鼠标甩到左下角仍可紧急中止脚本",
+                height - 1, width, height)
+
+
 def run_queue(selected_roles, state_store, run_date, is_rerun):
     # 点击延迟
     pyautogui.PAUSE = DELAYS["global"]
+    configure_failsafe()
     # 打开荼蘼
     open_script_window()
     # 确保当前没有打开的糊糊窗口
